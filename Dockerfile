@@ -1,7 +1,7 @@
 # parameters
-ARG REPO_NAME="LAB_4"
-ARG DESCRIPTION="StartCode"
-ARG MAINTAINER="Zepeng Xiao"
+ARG REPO_NAME="cmput412final"
+ARG DESCRIPTION="FinalCode"
+ARG MAINTAINER="Moyinoluwa Famobiwo, Austin Tralnberg, Nadeen Mohamed"
 # pick an icon from: https://fontawesome.com/v4.7.0/icons/
 ARG ICON="cube"
 
