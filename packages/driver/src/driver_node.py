@@ -144,27 +144,36 @@ class DriverNode(DTROS):
         #    f'/{self.veh}/led_emitter_node/set_custom_pattern')
         #self.led_service = rospy.ServiceProxy(
         #    f'/{self.veh}/led_emitter_node/set_custom_pattern', SetCustomLEDPattern, persistent=True)
+
         self.stage = 1
 
+        # Turning variables
+        self.left_turn_duration = 1.5
+        self.right_turn_duration = 1
+        self.straight_duration = 1
+        self.started_action = None
+
+        # Stop variables
+        self.last_stop_time = None # last time we stopped
+        self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
+        self.stop_duration = 5 # how long to stop for
+        self.stop_threshold_area = 5000 # minimum area of red to stop at
+
+        # Image processing detection timer
+        self.image_processing_hz = 8
+        self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
+
+        # Apriltag detection timer
+        self.apriltag_hz = 2
+        self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
+
         self.loginfo("Initialized")
+
         # Shutdown hook
         rospy.on_shutdown(self.hook)
 
     def img_callback(self, msg):
         self.image_msg = msg
-
-    def run_(self):
-        rate = rospy.Rate(8)  # 8hz
-        i = 0
-        while not rospy.is_shutdown():
-            if i % 4 == 0:
-                if self.image_msg is not None:
-                    self.detect_lane(self.image_msg)
-            if self.intersection_detected:
-                self.intersection_sequence()
-            self.lane_follow()
-            rate.sleep()
-            i += 1
 
     def run(self):
         self.stage1()
@@ -172,40 +181,6 @@ class DriverNode(DTROS):
         #self.stage3()
         self.stop()
         rospy.signal_shutdown("Program terminating.")
-
-    def drive_to_intersection(self): # and stop
-        # new intersection behaviour defined
-        rate = rospy.Rate(8)  # 8hz
-        while not self.intersection_detected:
-            self.detect_lane(self.image_msg)
-            self.detect_intersection()
-            self.lane_follow()
-            rate.sleep()
-
-        self.stop()
-        self.pass_time(self.stop_duration)
-
-    def sprint(self):
-        # keep in mind that this keeps checking for april tags
-        rate = rospy.Rate(4)  # 8hz
-        while not self.at_detected: # TODO: adjust distance for detecting apriltag
-            if self.image_msg is not None:
-                self.detect_lane(self.image_msg)
-                self.at_detected = self.detect_apriltag()
-            self.lane_follow()
-            rate.sleep()
-        # TODO: how are we currently handling the derivative kick problem?
-
-    def correct(self):
-        # TODO: currently when the bot stops it stops at an angle that prevents it from seeing
-        # the yellow tape. I was thinking that if we add code for it to "correct" itself
-        # i.e. re-orient itself so it sees the yellow lines properly
-        # we won't have the problem of it driving off the road when it stops detecting the yellow
-        # we could also add a flag for this within the drive function,
-        # i.e. if we can't see yellow, stop, correct, then keep driving.
-        return
-
-
 
     def stage1(self):
         rate = rospy.Rate(8)  # 8hz
@@ -228,18 +203,362 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 1 :)")
         self.stage += 1
 
-    def drive_to_blue_line(self):
-        # like drive_to_intersection but stop farther away to avoid duck murder
+    def stage2(self):
+        self.drive_to_blue_line()
+        self.avoid_ducks()
+        self.check_for_bot()
+        self.switch_lanes()
+        self.drive_to_blue_line()
+        self.avoid_ducks()
+        self.lane_follow()
+
+    def stage3(self):
+        self.sprint()
+        if self.closest_at != 38:
+            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
+        rospy.loginfo("PARKING.")
+        self.drive_to_intersection()
+        self.pub_straight()
+        while self.at_distance > 0.4:
+            continue
+        if self.closest_at != 227:
+            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
+        self.park(self.stall)
+
+    def sprint(self):
+        # keep in mind that this keeps checking for april tags
         rate = rospy.Rate(4)
-        self.close_to_blue = False
-        while not self.close_to_blue:
-            if self.image_msg is not None:
-                self.detect_lane(self.image_msg)
-                self.detect_blue_line(self.image_msg)
+        while not self.at_detected:
+            self.detect_lane(self.image_msg)
+            self.at_detected = self.detect_apriltag()
+            self.lane_follow()
+            rate.sleep()
+
+    def drive_to_intersection(self): # and stop
+        # new intersection behaviour defined
+        rate = rospy.Rate(8)
+        while not self.intersection_detected:
+            self.detect_lane(self.image_msg)
+            self.detect_intersection()
             self.lane_follow()
             rate.sleep()
 
         self.stop()
+        self.pass_time(self.stop_duration)
+
+    def correct(self):
+        # TODO: currently when the bot stops it stops at an angle that prevents it from seeing
+        # the yellow tape. I was thinking that if we add code for it to "correct" itself
+        # i.e. re-orient itself so it sees the yellow lines properly
+        # we won't have the problem of it driving off the road when it stops detecting the yellow
+        # we could also add a flag for this within the drive function,
+        # i.e. if we can't see yellow, stop, correct, then keep driving.
+        return
+
+    def drive_to_blue_line(self):
+        # like drive_to_intersection but stop farther away to avoid duck murder
+        rate = rospy.Rate(8)
+        self.close_to_blue = False
+        while not self.close_to_blue:
+            self.detect_lane(self.image_msg)
+            self.detect_blue_line(self.image_msg)
+            self.lane_follow()
+            rate.sleep()
+        self.stop()
+
+    def check_for_bot(self):
+        rate = rospy.Rate(4)
+        self.close_to_blue = False
+        while not self.close_to_blue:
+            self.detect_lane(self.image_msg)
+            # self.detect_intersection(self.image_msg) # TODO: replace with blue contour/bot detections
+            self.lane_follow()
+            rate.sleep()
+        # TODO: stop at a suitable distance so we have time to switch lanes
+        self.stop()
+
+    def switch_lanes(self):
+        # TODO: Probably switch to English driver. Keep moving till (?). Then switch back.
+        pass
+
+    def avoid_ducks(self):
+        self.stop() # just to make sure
+        ducks_present = self.check_for_ducks(self.image_msg)
+        if ducks_present:
+            while self.check_for_ducks(self.image_msg):
+                self.pass_time(1)
+            self.pass_time(5)
+        else:
+            self.pass_time(5)
+
+    def park(self, stall):
+        # TODO
+        if stall == 1:
+            pass
+        elif stall == 2:
+            pass
+        elif stall == 3:
+            pass
+        elif stall == 4:
+            pass
+        else:
+            rospy.loginfo("WARNING: Wrong input for parking stall number.")
+            rospy.loginfo("Automatically backing into stall 3.")
+
+    def lane_follow(self): # TODO: improve so it stops moving off the road at turns
+        if self.proportional is None:
+            self.twist.omega = 0
+        else:
+            # P Term
+            P = -self.proportional * self.P
+
+            # D Term
+            d_error = (self.proportional - self.last_error) / \
+                (rospy.get_time() - self.last_time)
+            self.last_error = self.proportional
+            self.last_time = rospy.get_time()
+            D = d_error * self.D
+
+            self.twist.v = self.velocity
+            self.twist.omega = P + D
+
+        self.vel_pub.publish(self.twist)
+
+    def intersection_sequence(self):
+        self.stop()
+        self.pass_time(self.stop_duration)
+        # Determine which direction to go, based on apriltag
+        if self.closest_at == 48:
+            # self.pub_straight()
+            # self.pass_time(1.5)
+            self.right_turn()
+        elif self.closest_at == 50:
+            # self.pub_straight()
+            # self.pass_time(1.5)
+            self.left_turn()
+        elif self.closest_at == 56:
+            self.pub_straight()
+            self.pass_time(3)
+
+        self.last_stop_time = rospy.get_time()
+        self.intersection_detected = False
+
+    def right_turn(self):
+        # TODO: test
+        """
+        Publish right-angle right turn
+        """
+        # self.set_lights("right")
+        self.loginfo("Turning right")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.right_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = -2.5
+            self.vel_pub.publish(self.twist)
+
+    def left_turn(self):
+        # TODO: test
+        """
+        Publish right-angle left turn
+        """
+        # self.set_lights("left")
+        self.loginfo("Turning left")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.left_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = 2.5
+            self.vel_pub.publish(self.twist)
+
+    def stop(self):
+        self.twist.v = 0
+        self.twist.omega = 0
+        self.vel_pub.publish(self.twist)
+        # self.set_lights("stop")
+
+    def pub_straight(self, linear=None):
+        # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
+        self.twist.v = self.velocity
+        if linear is not None:
+            self.twist.omega = linear
+        else:
+            self.twist.omega = self.calibration
+        self.vel_pub.publish(self.twist)
+
+    def pass_time(self, t):
+        start_time = rospy.get_time()
+        while rospy.get_time() < start_time + t:
+            continue
+
+    def detect_lane(self, msg):
+        if msg is None:
+            return
+        # decodes the image for lane following
+        img = self.jpeg.decode(msg.data)
+        # self.at_detected = self.detect_apriltag(msg)
+        crop = img[:, :, :]
+        crop_width = crop.shape[1]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
+        crop = cv2.bitwise_and(crop, crop, mask=mask)
+        contours, hierarchy = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for lane in front
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(contours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                self.proportional = cx - int(crop_width / 2) + self.offset
+                if DEBUG:
+                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+            except:
+                pass
+        else:
+            self.proportional = None
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+
+    def detect_intersection(self):
+        msg = self.image_msg
+
+        # Don't detect we don't have a message or we only recently detected an intersection
+        if not msg or (self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown):
+            return
+
+        # Mask for stop lines
+        img = self.jpeg.decode(msg.data)
+        crop = img[400:-1, :, :]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+        stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for lane in front
+        max_area = self.stop_threshold_area
+        max_idx = -1
+        for i in range(len(stopContours)):
+            area = cv2.contourArea(stopContours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(stopContours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                self.intersection_detected = True
+                if DEBUG:
+                    cv2.drawContours(crop, stopContours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+            except:
+                pass
+        else:
+            self.intersection_detected = False
+
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+
+    def detect_apriltag(self):
+        if self.image_msg is None:
+            return False
+        img_msg = self.image_msg
+        # detect an intersection by finding the corresponding apriltags
+        cv_image = None
+        try:
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
+        except CvBridgeError as e:
+            self.log(e)
+            return []
+
+        # undistort the image
+        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+            self.K, self.DC, (self.w, self.h), 0, (self.w, self.h))
+        image_np = cv2.undistort(cv_image, self.K, self.DC, None, newcameramtx)
+
+        # convert the image to black and white
+        image_gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+
+        # detect tags present in image
+        tags = self.at_detector.detect(
+            image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
+
+        closest_tag_z = 1000
+        closest = None
+
+        for tag in tags:
+            # ignore distant tags and tags with bad decoding
+            z = tag.pose_t[2][0]
+            if tag.decision_margin < self.decision_threshold or z > self.z_threshold:
+                continue
+
+            # update the closest-detected tag if needed
+            if z < closest_tag_z:
+                closest_tag_z = z
+                closest = tag
+
+        if closest:
+            if closest.tag_id in self.apriltags:
+                self.at_distance = closest.pose_t[2][0]
+                self.closest_at = closest.tag_id
+                return True
+        return False
+
+    def detect_blue_line(self, msg):
+        if msg is None:
+            return
+        img = self.jpeg.decode(msg.data)
+        crop = img[:, :, :]
+        crop_height = crop.shape[0]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, BLUE_MASK[0], BLUE_MASK[1])
+        crop = cv2.bitwise_and(crop, crop, mask=mask)
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for nearest blue line
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(contours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                if DEBUG:
+                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+
+                if cy > int(crop_height * (2/3)):
+                    self.close_to_blue = True
+                else:
+                    self.close_to_blue = False
+            except:
+                pass
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
 
     def check_for_ducks(self, msg):
         found_ducks = False
@@ -296,219 +615,6 @@ class DriverNode(DTROS):
 
         return found_ducks
 
-    def check_for_bot(self):
-        rate = rospy.Rate(4)
-        self.close_to_blue = False
-        while not self.close_to_blue:
-            if self.image_msg is not None:
-                self.detect_lane(self.image_msg)
-                # self.detect_intersection(self.image_msg) # TODO: replace with blue contour/bot detections
-            self.lane_follow()
-            rate.sleep()
-        # TODO: stop at a suitable distance so we have time to switch lanes
-        self.stop()
-
-    def detect_intersection(self):
-        msg = self.image_msg
-
-        # Don't detect we don't have a message or we only recently detected an intersection
-        if not msg or (self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown):
-            return
-
-        # Mask for stop lines
-        img = self.jpeg.decode(msg.data)
-        crop = img[400:-1, :, :]
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
-        stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-        # Search for lane in front
-        max_area = self.stop_threshold_area
-        max_idx = -1
-        for i in range(len(stopContours)):
-            area = cv2.contourArea(stopContours[i])
-            if area > max_area:
-                max_idx = i
-                max_area = area
-
-        if max_idx != -1:
-            M = cv2.moments(stopContours[max_idx])
-            try:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                self.intersection_detected = True
-                if DEBUG:
-                    cv2.drawContours(crop, stopContours, max_idx, (0, 255, 0), 3)
-                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-            except:
-                pass
-        else:
-            self.intersection_detected = False
-
-        if DEBUG:
-            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
-            self.pub_mask.publish(rect_img_msg)
-
-    def switch_lanes(self):
-        # TODO: Probably switch to English driver. Keep moving till (?). Then switch back.
-        pass
-
-    def avoid_ducks(self):
-        self.drive_to_blue_line()
-        self.stop() # just to make sure
-        ducks_present = self.check_for_ducks(self.image_msg)
-        if ducks_present:
-            while self.check_for_ducks(self.image_msg):
-                self.pass_time(1)
-            self.pass_time(5)
-        else:
-            self.pass_time(5)
-
-    def stage2(self):
-        self.avoid_ducks()
-        self.check_for_bot()
-        self.switch_lanes()
-        self.avoid_ducks()
-        self.lane_follow()
-
-    def park(self, stall):
-        # TODO
-        if stall == 1:
-            pass
-        elif stall == 2:
-            pass
-        elif stall == 3:
-            pass
-        elif stall == 4:
-            pass
-        else:
-            rospy.loginfo("WARNING: Wrong input for parking stall number.")
-            rospy.loginfo("Automatically backing into stall 3.")
-
-    def stage3(self):
-        self.sprint()
-        if self.closest_at != 38:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
-        rospy.loginfo("PARKING.")
-        self.drive_to_intersection()
-        self.pub_straight()
-        while self.at_distance > 0.4:
-            continue
-        if self.closest_at != 227:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
-        self.park(self.stall)
-
-    def detect_lane(self, msg):
-        if msg is None:
-            return
-        # decodes the image for lane following
-        img = self.jpeg.decode(msg.data)
-        # self.at_detected = self.detect_apriltag(msg)
-        crop = img[:, :, :]
-        crop_width = crop.shape[1]
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
-        crop = cv2.bitwise_and(crop, crop, mask=mask)
-        contours, hierarchy = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-        # Search for lane in front
-        max_area = 20
-        max_idx = -1
-        for i in range(len(contours)):
-            area = cv2.contourArea(contours[i])
-            if area > max_area:
-                max_idx = i
-                max_area = area
-
-        if max_idx != -1:
-            M = cv2.moments(contours[max_idx])
-            try:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                self.proportional = cx - int(crop_width / 2) + self.offset
-                if DEBUG:
-                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
-                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-            except:
-                pass
-        else:
-            self.proportional = None
-
-        # debugging
-        if DEBUG:
-            rect_img_msg = CompressedImage(
-                format="jpeg", data=self.jpeg.encode(crop))
-            self.pub_mask.publish(rect_img_msg)
-
-    def lane_follow(self): # TODO: improve so it stops moving off the road at turns
-        if self.proportional is None:
-            self.twist.omega = 0
-        else:
-            # P Term
-            P = -self.proportional * self.P
-
-            # D Term
-            d_error = (self.proportional - self.last_error) / \
-                (rospy.get_time() - self.last_time)
-            self.last_error = self.proportional
-            self.last_time = rospy.get_time()
-            D = d_error * self.D
-
-            self.twist.v = self.velocity
-            self.twist.omega = P + D
-
-        self.vel_pub.publish(self.twist)
-
-    def intersection_sequence(self):
-        """
-        When encounter intersection
-        """
-        self.stop()
-        self.pass_time(self.stop_duration)
-
-        # Determine which direction to go, based on apriltag
-        if self.closest_at == 48:
-            self.pub_straight()
-            self.pass_time(1.5)
-            self.right_turn()
-        elif self.closest_at == 50:
-            self.pub_straight()
-            self.pass_time(1.5)
-            self.left_turn()
-        elif self.closest_at == 56:
-            self.pub_straight()
-            self.pass_time(3)
-
-        self.last_stop_time = rospy.get_time()
-        self.intersection_detected = False
-
-    def right_turn(self):
-        # TODO: change to improved turn
-        """
-        Publish right-angle right turn
-        """
-        # self.set_lights("right")
-        self.loginfo("Turning right")
-        start_time = rospy.get_time()
-        while rospy.get_time() - start_time < self.right_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
-
-    def left_turn(self):
-        # TODO: change to improved turn
-        """
-        Publish right-angle left turn
-        """
-        # self.set_lights("left")
-        self.loginfo("Turning left")
-        start_time = rospy.get_time()
-        while rospy.get_time() - start_time < self.left_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
-
     def right_turn_(self):
         # self.set_lights("right")
         self.twist.v = 0
@@ -526,112 +632,6 @@ class DriverNode(DTROS):
         start_time = rospy.get_time()
         while rospy.get_time() < start_time + 0.6:
             continue
-
-    def stop(self):
-        self.twist.v = 0
-        self.twist.omega = 0
-        self.vel_pub.publish(self.twist)
-        # self.set_lights("stop")
-
-    def pub_straight(self, linear=None):
-        # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
-        self.twist.v = self.velocity
-        if linear is not None:
-            self.twist.omega = linear
-        else:
-            self.twist.omega = self.calibration
-        self.vel_pub.publish(self.twist)
-
-    def pass_time(self, t):
-        start_time = rospy.get_time()
-        while rospy.get_time() < start_time + t:
-            continue
-
-    def detect_apriltag(self):
-        if self.image_msg is None:
-            return False
-        img_msg = self.image_msg
-        # detect an intersection by finding the corresponding apriltags
-        cv_image = None
-        try:
-            cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
-        except CvBridgeError as e:
-            self.log(e)
-            return []
-
-        # undistort the image
-        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
-            self.K, self.DC, (self.w, self.h), 0, (self.w, self.h))
-        image_np = cv2.undistort(cv_image, self.K, self.DC, None, newcameramtx)
-
-        # convert the image to black and white
-        image_gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
-
-        # detect tags present in image
-        tags = self.at_detector.detect(
-            image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
-
-        closest_tag_z = 1000
-        closest = None
-
-        for tag in tags:
-            # ignore distant tags and tags with bad decoding
-            z = tag.pose_t[2][0]
-            if tag.decision_margin < self.decision_threshold or z > self.z_threshold:
-                continue
-
-            # update the closest-detected tag if needed
-            if z < closest_tag_z:
-                closest_tag_z = z
-                closest = tag
-
-        if closest:
-            if closest.tag_id in self.apriltags:
-                self.at_distance = closest.pose_t[2][0]
-                self.closest_at = closest.tag_id
-                return True
-        return False
-
-    def detect_blue_line(self, msg):
-        img = self.jpeg.decode(msg.data)
-        crop = img[:, :, :]
-        crop_height = crop.shape[0]
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, BLUE_MASK[0], BLUE_MASK[1])
-        crop = cv2.bitwise_and(crop, crop, mask=mask)
-        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-        # Search for nearest blue line
-        max_area = 20
-        max_idx = -1
-        for i in range(len(contours)):
-            area = cv2.contourArea(contours[i])
-            if area > max_area:
-                max_idx = i
-                max_area = area
-
-        if max_idx != -1:
-            M = cv2.moments(contours[max_idx])
-            try:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                if DEBUG:
-                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
-                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-
-                if cy > int(crop_height * (2/3)):
-                    self.close_to_blue = True
-                else:
-                    self.close_to_blue = False
-            except:
-                pass
-
-
-        # debugging
-        if DEBUG:
-            rect_img_msg = CompressedImage(
-                format="jpeg", data=self.jpeg.encode(crop))
-            self.pub_mask.publish(rect_img_msg)
 
     def set_lights(self, state):
         msg = LEDPattern()
