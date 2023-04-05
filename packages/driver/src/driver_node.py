@@ -27,16 +27,19 @@ class DriverNode(DTROS):
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
 
-        # Publishers
-        self.pub_mask = rospy.Publisher(
-            "/" + self.veh + "/output/image/mask/compressed", CompressedImage, queue_size=1)
-        self.vel_pub = rospy.Publisher(
-            "/" + self.veh + "/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
-        self.pub_img_bool = True
-
         # Subscribers
-        self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed",
-                                           CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
+        self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
+
+        # Odometry Subscribers
+        # self.sub_distance_left = rospy.Subscriber(f'/{self.veh_name}/odometry_node/integrated_distance_left', Float32, self.cb_distance_left)
+        # self.sub_distance_right = rospy.Subscriber(f'/{self.veh_name}/odometry_node/integrated_distance_right', Float32, self.cb_distance_right)
+
+        # Publishers
+        self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
+        self.pub_wheel_commands = rospy.Publisher(f'/{self.veh_name}/wheels_driver_node/wheels_cmd', WheelsCmdStamped, queue_size=1)
+        self.pub_mask = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed", CompressedImage, queue_size=1)
+        self.pub_img_bool = DEBUG
+
         # image processing tools
         self.image_msg = None
         self.bridge = CvBridge()
@@ -123,27 +126,32 @@ class DriverNode(DTROS):
         # Shutdown hook
         rospy.on_shutdown(self.hook)
 
-    def run(self):
+    def run_(self):
         rate = rospy.Rate(8)  # 8hz
         i = 0
         while not rospy.is_shutdown():
-            i += 1
             if i % 4 == 0:
-                # reduce to 2 hz
                 if self.image_msg is not None:
-                    self.detect_digits(self.image_msg)
                     self.detect_lane(self.image_msg)
             if self.intersection_detected:
                 self.intersection_sequence()
             self.drive()
-
             rate.sleep()
+            i += 1
 
     def run(self):
-        if self.intersection_detected:
-            self.intersection_sequence()
-        else:
-            self.drive()
+        self.stage1()
+        self.stage2()
+        self.stage3()
+        self.stop()
+        rospy.signal_shutdown("Program terminating.")
+
+    def stage1(self):
+        self.drive()
+    def stage2(self):
+        self.drive()
+    def stage3(self):
+        self.drive()
 
     def img_callback(self, msg):
         self.image_msg = msg
