@@ -2,14 +2,16 @@
 
     <arg name="pkg_name" value="driver"/>
     <arg name="veh" doc="Name of vehicle. ex: megaman"/>
+    <arg name="stall" doc="Parking stall to go to"/>
     <arg name="node_name" default="driver_node"/>
 
     <group ns="$(arg veh)">
         <node name="$(arg node_name)" pkg="$(arg pkg_name)" type="$(arg node_name).py" output="screen" required="true">
             <param name="veh" value="$(arg veh)" />
+            <param name="stall" value="$(arg stall)" />
         </node>
     </group>
 
-    <node  name="driver_node" pkg="$(arg pkg_name)" type="driver_node.py" output="screen"></node>
+    <!-- <node  name="driver_node" pkg="$(arg pkg_name)" type="driver_node.py" output="screen"></node> -->
 
 </launch>
