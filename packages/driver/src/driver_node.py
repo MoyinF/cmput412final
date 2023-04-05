@@ -15,6 +15,8 @@ from dt_apriltags import Detector, Detection
 import yaml
 
 YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for yellow mask
+BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
+ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
 DEBUG = False
 ENGLISH = False
 
@@ -32,12 +34,12 @@ class DriverNode(DTROS):
         self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
 
         # Odometry Subscribers
-        # self.sub_distance_left = rospy.Subscriber(f'/{self.veh_name}/odometry_node/integrated_distance_left', Float32, self.cb_distance_left)
-        # self.sub_distance_right = rospy.Subscriber(f'/{self.veh_name}/odometry_node/integrated_distance_right', Float32, self.cb_distance_right)
+        # self.sub_distance_left = rospy.Subscriber(f'/{self.veh}/odometry_node/integrated_distance_left', Float32, self.cb_distance_left)
+        # self.sub_distance_right = rospy.Subscriber(f'/{self.veh}/odometry_node/integrated_distance_right', Float32, self.cb_distance_right)
 
         # Publishers
         self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
-        self.pub_wheel_commands = rospy.Publisher(f'/{self.veh_name}/wheels_driver_node/wheels_cmd', WheelsCmdStamped, queue_size=1)
+        self.pub_wheel_commands = rospy.Publisher(f'/{self.veh}/wheels_driver_node/wheels_cmd', WheelsCmdStamped, queue_size=1)
         self.pub_mask = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed", CompressedImage, queue_size=1)
         self.pub_img_bool = DEBUG
 
@@ -150,7 +152,7 @@ class DriverNode(DTROS):
             i += 1
 
     def run(self):
-        self.stage1()
+        # self.stage1()
         self.stage2()
         self.stage3()
         self.stop()
@@ -250,15 +252,66 @@ class DriverNode(DTROS):
         while not self.close_to_blue:
             if self.image_msg is not None:
                 self.detect_lane(self.image_msg)
-                # self.detect_intersection(self.image_msg) # TODO: replace with blue line detections
+                self.detect_blue_line(self.image_msg)
             self.drive()
             rate.sleep()
 
         self.stop()
 
-    def check_for_ducks(self):
-        # TODO: I (Mo) intend for us to use both yellow mask and tof sensing for this (if necessary)
-        return False
+    def check_for_ducks(self, msg):
+        found_ducks = False
+        
+        img = self.jpeg.decode(msg.data)
+        crop = img[:, :, :]
+        crop_height = crop.shape[0]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        
+        yellow_mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
+        orange_mask = cv2.inRange(hsv, ORANGE_MASK[0], ORANGE_MASK[1])
+        combined_mask = cv2.bitwise_or(yellow_mask, orange_mask)
+        crop = cv2.bitwise_and(crop, crop, mask=combined_mask)
+        
+        yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        orange_contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for nearest ducks
+        min_area = 50
+        max_idx = -1
+        for yellow_contour in yellow_contours:
+            for orange_contour in orange_contours:
+                
+                area = cv2.contourArea(yellow_contour)
+                if area > min_area:
+                    M1 = cv2.moments(yellow_contour)
+                    M2 = cv2.moments(orange_contour)
+                    
+
+                    try:
+                        cx1 = int(M1['m10'] / M1['m00'])
+                        cy1 = int(M1['m01'] / M1['m00'])
+                        cx2 = int(M2['m10'] / M2['m00'])
+                        cy2 = int(M2['m01'] / M2['m00'])
+                    
+                        distance = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
+                    
+                        if distance < 40:
+                            found_ducks = True
+                        
+                            if DEBUG:
+                                cv2.drawContours(crop, [yellow_contour], -1, (0, 255, 0), 3)
+                                cv2.drawContours(crop, [orange_contour], -1, (0, 255, 0), 3)
+                                cv2.circle(crop, (cx1, cy1), 7, (0, 0, 255), -1)
+
+                    except:
+                        pass
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+            
+        return found_ducks
 
     def check_for_bot(self):
         rate = rospy.Rate(4)
@@ -282,9 +335,9 @@ class DriverNode(DTROS):
             rospy.loginfo("WARNING: Detecting wrong apriltag for stage 2.")
         self.drive_to_blue_line()
         self.stop() # just to make sure
-        ducks_present = self.check_for_ducks()
+        ducks_present = self.check_for_ducks(self.image_msg)
         if ducks_present:
-            while self.check_for_ducks():
+            while self.check_for_ducks(self.image_msg):
                 self.pass_time(1)
             self.pass_time(5)
         else:
@@ -300,13 +353,13 @@ class DriverNode(DTROS):
     def park(self, stall):
         # TODO
         if stall == 1:
-            continue
+            pass
         elif stall == 2:
-            continue
+            pass
         elif stall == 3:
-            continue
+            pass
         elif stall == 4:
-            continue
+            pass
         else:
             rospy.loginfo("WARNING: Wrong input for parking stall number.")
             rospy.loginfo("Automatically backing into stall 3.")
@@ -484,6 +537,47 @@ class DriverNode(DTROS):
                 return True
         return False
 
+    def detect_blue_line(self, msg):
+        img = self.jpeg.decode(msg.data)
+        crop = img[:, :, :]
+        crop_height = crop.shape[0]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        mask = cv2.inRange(hsv, BLUE_MASK[0], BLUE_MASK[1])
+        crop = cv2.bitwise_and(crop, crop, mask=mask)
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for nearest blue line
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(contours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                if DEBUG:
+                    cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+                    
+                if cy > int(crop_height * (2/3)):
+                    self.close_to_blue = True
+                else:
+                    self.close_to_blue = False
+            except:
+                pass
+
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+            
     def set_lights(self, state):
         msg = LEDPattern()
         if state == "left":
