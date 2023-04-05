@@ -160,12 +160,12 @@ class DriverNode(DTROS):
         self.stop_threshold_area = 5000 # minimum area of red to stop at
 
         # Image processing detection timer
-        self.image_processing_hz = 8
-        self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
+        # self.image_processing_hz = 8
+        # self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
 
         # Apriltag detection timer
-        self.apriltag_hz = 2
-        self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
+        # self.apriltag_hz = 2
+        # self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
 
         self.loginfo("Initialized")
 
