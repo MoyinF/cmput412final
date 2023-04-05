@@ -14,9 +14,12 @@ from duckietown_msgs.srv import ChangePattern, SetCustomLEDPattern
 from dt_apriltags import Detector, Detection
 import yaml
 
+# Color masks
 YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for yellow mask
 BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
 ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
+STOP_MASK = [(0, 75, 150), (5, 150, 255)] # for stop lines
+
 DEBUG = False
 ENGLISH = False
 
@@ -104,7 +107,7 @@ class DriverNode(DTROS):
 
         # apriltag detection filters
         self.decision_threshold = 10
-        self.z_threshold = 0.35
+        self.z_threshold = 0.55
 
         # PID Variables for driving
         self.proportional = None
@@ -121,15 +124,27 @@ class DriverNode(DTROS):
         self.last_time = rospy.get_time()
         self.calibration = 0.5
 
+        if self.veh == "csc22907":
+            self.P = 0.020
+            self.D = -0.007
+            self.offset = 180
+
         self.camera_center = 340
         self.leader_x = self.camera_center
         self.straight_threshold = 75
 
+        # Stop variables
+        self.last_stop_time = None # last time we stopped
+        self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
+        self.stop_duration = 5 # how long to stop for
+        self.stop_threshold_area = 5000 # minimum area of red to stop at
+
         # Service proxies
-        rospy.wait_for_service(
-            f'/{self.veh}/led_emitter_node/set_custom_pattern')
-        self.led_service = rospy.ServiceProxy(
-            f'/{self.veh}/led_emitter_node/set_custom_pattern', SetCustomLEDPattern, persistent=True)
+        #rospy.wait_for_service(
+        #    f'/{self.veh}/led_emitter_node/set_custom_pattern')
+        #self.led_service = rospy.ServiceProxy(
+        #    f'/{self.veh}/led_emitter_node/set_custom_pattern', SetCustomLEDPattern, persistent=True)
+        self.stage = 1
 
         self.loginfo("Initialized")
         # Shutdown hook
@@ -147,32 +162,28 @@ class DriverNode(DTROS):
                     self.detect_lane(self.image_msg)
             if self.intersection_detected:
                 self.intersection_sequence()
-            self.drive()
+            self.lane_follow()
             rate.sleep()
             i += 1
 
     def run(self):
-        # self.stage1()
+        self.stage1()
         self.stage2()
-        self.stage3()
+        #self.stage3()
         self.stop()
         rospy.signal_shutdown("Program terminating.")
 
     def drive_to_intersection(self): # and stop
         # new intersection behaviour defined
-        # TODO: drive till we reach red line
-        # while red line not in bottom crop...
-            # self.drive()
-        rate = rospy.Rate(4)  # 8hz
-        while not self.intersection_detected: # TODO: implement intersection (red line) detection
-            if self.image_msg is not None:
-                self.detect_lane(self.image_msg)
-                # self.detect_intersection(self.image_msg) # TODO: replace with red line detections
-            self.drive()
+        rate = rospy.Rate(8)  # 8hz
+        while not self.intersection_detected:
+            self.detect_lane(self.image_msg)
+            self.detect_intersection()
+            self.lane_follow()
             rate.sleep()
 
         self.stop()
-        self.pass_time(7)
+        self.pass_time(self.stop_duration)
 
     def sprint(self):
         # keep in mind that this keeps checking for april tags
@@ -180,8 +191,8 @@ class DriverNode(DTROS):
         while not self.at_detected: # TODO: adjust distance for detecting apriltag
             if self.image_msg is not None:
                 self.detect_lane(self.image_msg)
-                self.at_detected = self.detect_apriltag(self.image_msg)
-            self.drive()
+                self.at_detected = self.detect_apriltag()
+            self.lane_follow()
             rate.sleep()
         # TODO: how are we currently handling the derivative kick problem?
 
@@ -194,56 +205,28 @@ class DriverNode(DTROS):
         # i.e. if we can't see yellow, stop, correct, then keep driving.
         return
 
-    def route1(self):
-        # new intersection behaviour defined
-        # After crossing red line...
-        self.right_turn()
-        self.sprint()
-        if self.closest_at != 50:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for route 1.")
-        self.drive_to_intersection()
-        rospy.loginfo("Turning left.")
-        self.left_turn()
 
-        self.sprint()
-        if self.closest_at == 56:
-            rospy.loginfo("YAY: Almost done with Stage 1. :)")
-        else:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for route 1.")
-        self.drive_to_intersection()
-        self.pub_straight()
-
-    def route2(self):
-        # new intersection behaviour defined
-        # After crossing red line...
-        self.pub_straight() # TODO: needs fixing, (check function's comments)
-        rate = rospy.Rate(4)  # 8hz
-        self.sprint()
-        if self.closest_at != 48:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for route 2.")
-        self.drive_to_intersection()
-        rospy.loginfo("Turning right.")
-        self.right_turn()
-
-        self.sprint()
-        if self.closest_at != 50:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for route 1.")
-        self.drive_to_intersection()
-        rospy.loginfo("Turning left.")
-        self.left_turn()
 
     def stage1(self):
-        rate = rospy.Rate(4)  # 8hz
-        self.sprint()
+        rate = rospy.Rate(8)  # 8hz
+        intersection_count = 0
+        i = 0
+        while not rospy.is_shutdown() and self.closest_at != 163:
+            self.detect_lane(self.image_msg)
+            if i % 2 == 0:
+                self.at_detected = self.detect_apriltag()
+            if self.at_detected:
+                if self.closest_at == 163:
+                    break
+                self.drive_to_intersection()
+                self.intersection_sequence()
+            else:
+                self.lane_follow()
+            rate.sleep()
+            i += 1
 
-        if self.closest_at == 48:
-            self.route1()
-        elif self.closest_at == 56:
-            self.route2()
-        else:
-            rospy.loginfo("ERROR: Detecting wrong apriltag for stage 1.")
-            rospy.loginfo("REPEATING stage 1.") # TODO: Should we do this?
-            self.stage1()
+        self.loginfo("Finished stage 1 :)")
+        self.stage += 1
 
     def drive_to_blue_line(self):
         # like drive_to_intersection but stop farther away to avoid duck murder
@@ -253,7 +236,7 @@ class DriverNode(DTROS):
             if self.image_msg is not None:
                 self.detect_lane(self.image_msg)
                 self.detect_blue_line(self.image_msg)
-            self.drive()
+            self.lane_follow()
             rate.sleep()
 
         self.stop()
@@ -320,19 +303,57 @@ class DriverNode(DTROS):
             if self.image_msg is not None:
                 self.detect_lane(self.image_msg)
                 # self.detect_intersection(self.image_msg) # TODO: replace with blue contour/bot detections
-            self.drive()
+            self.lane_follow()
             rate.sleep()
         # TODO: stop at a suitable distance so we have time to switch lanes
         self.stop()
+
+    def detect_intersection(self):
+        msg = self.image_msg
+
+        # Don't detect we don't have a message or we only recently detected an intersection
+        if not msg or (self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown):
+            return
+
+        # Mask for stop lines
+        img = self.jpeg.decode(msg.data)
+        crop = img[400:-1, :, :]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+        stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for lane in front
+        max_area = self.stop_threshold_area
+        max_idx = -1
+        for i in range(len(stopContours)):
+            area = cv2.contourArea(stopContours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            M = cv2.moments(stopContours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                self.intersection_detected = True
+                if DEBUG:
+                    cv2.drawContours(crop, stopContours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+            except:
+                pass
+        else:
+            self.intersection_detected = False
+
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
 
     def switch_lanes(self):
         # TODO: Probably switch to English driver. Keep moving till (?). Then switch back.
         pass
 
     def avoid_ducks(self):
-        self.sprint()
-        if self.closest_at != 163:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 2.")
         self.drive_to_blue_line()
         self.stop() # just to make sure
         ducks_present = self.check_for_ducks(self.image_msg)
@@ -348,7 +369,7 @@ class DriverNode(DTROS):
         self.check_for_bot()
         self.switch_lanes()
         self.avoid_ducks()
-        self.drive()
+        self.lane_follow()
 
     def park(self, stall):
         # TODO
@@ -378,6 +399,8 @@ class DriverNode(DTROS):
         self.park(self.stall)
 
     def detect_lane(self, msg):
+        if msg is None:
+            return
         # decodes the image for lane following
         img = self.jpeg.decode(msg.data)
         # self.at_detected = self.detect_apriltag(msg)
@@ -418,7 +441,7 @@ class DriverNode(DTROS):
                 format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
-    def drive(self): # TODO: improve so it stops moving off the road at turns
+    def lane_follow(self): # TODO: improve so it stops moving off the road at turns
         if self.proportional is None:
             self.twist.omega = 0
         else:
@@ -438,27 +461,56 @@ class DriverNode(DTROS):
         self.vel_pub.publish(self.twist)
 
     def intersection_sequence(self):
-        # outdated
-        if DEBUG:
-            rospy.loginfo("INTERSECTION DETECTED at {}".format(str(self.at_distance)))
-
-        # latency between detecting intersection and stopping
-        self.pub_straight(linear=0)
-        wait_time = self.at_distance * 2  # 1.5 # seconds
-        self.pass_time(wait_time)
+        """
+        When encounter intersection
+        """
         self.stop()
-        self.pass_time(6)
+        self.pass_time(self.stop_duration)
+
+        # Determine which direction to go, based on apriltag
+        if self.closest_at == 48:
+            self.pub_straight()
+            self.pass_time(1.5)
+            self.right_turn()
+        elif self.closest_at == 50:
+            self.pub_straight()
+            self.pass_time(1.5)
+            self.left_turn()
+        elif self.closest_at == 56:
+            self.pub_straight()
+            self.pass_time(3)
+
+        self.last_stop_time = rospy.get_time()
+        self.intersection_detected = False
 
     def right_turn(self):
-        self.set_lights("right")
-        # needs some odometry code, using wheels_cmd
+        # TODO: change to improved turn
+        """
+        Publish right-angle right turn
+        """
+        # self.set_lights("right")
+        self.loginfo("Turning right")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.right_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = -2.5
+            self.vel_pub.publish(self.twist)
 
     def left_turn(self):
-        self.set_lights("left")
-        # needs some odometry code, using wheels_cmd
+        # TODO: change to improved turn
+        """
+        Publish right-angle left turn
+        """
+        # self.set_lights("left")
+        self.loginfo("Turning left")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.left_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = 2.5
+            self.vel_pub.publish(self.twist)
 
     def right_turn_(self):
-        self.set_lights("right")
+        # self.set_lights("right")
         self.twist.v = 0
         self.twist.omega = -12
         self.vel_pub.publish(self.twist)
@@ -467,7 +519,7 @@ class DriverNode(DTROS):
             continue
 
     def left_turn_(self):
-        self.set_lights("left")
+        # self.set_lights("left")
         self.twist.v = 0
         self.twist.omega = 12
         self.vel_pub.publish(self.twist)
@@ -479,7 +531,7 @@ class DriverNode(DTROS):
         self.twist.v = 0
         self.twist.omega = 0
         self.vel_pub.publish(self.twist)
-        self.set_lights("stop")
+        # self.set_lights("stop")
 
     def pub_straight(self, linear=None):
         # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
@@ -495,7 +547,10 @@ class DriverNode(DTROS):
         while rospy.get_time() < start_time + t:
             continue
 
-    def detect_apriltag(self, img_msg):
+    def detect_apriltag(self):
+        if self.image_msg is None:
+            return False
+        img_msg = self.image_msg
         # detect an intersection by finding the corresponding apriltags
         cv_image = None
         try:
