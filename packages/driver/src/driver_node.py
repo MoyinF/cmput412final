@@ -22,6 +22,8 @@ STOP_MASK = [(0, 75, 150), (5, 150, 255)] # for stop lines
 
 DEBUG = False
 ENGLISH = False
+SYNCHRONOUS = True
+AT_SYNCHRONOUS = False
 
 
 class DriverNode(DTROS):
@@ -160,12 +162,14 @@ class DriverNode(DTROS):
         self.stop_threshold_area = 5000 # minimum area of red to stop at
 
         # Image processing detection timer
-        # self.image_processing_hz = 8
-        # self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
+        if not SYNCHRONOUS:
+            self.image_processing_hz = 8
+            self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
 
         # Apriltag detection timer
-        # self.apriltag_hz = 2
-        # self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
+        if not AT_SYNCHRONOUS:
+            self.apriltag_hz = 2
+            self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
 
         self.loginfo("Initialized")
 
@@ -176,7 +180,7 @@ class DriverNode(DTROS):
         self.image_msg = msg
 
     def cb_image_processing(self, _):
-        self.detect_lane()
+        self.detect_lane(self.image_msg)
         if self.stage in [1, 3]:
             self.detect_intersection()
         if self.stage == 2:
@@ -194,8 +198,9 @@ class DriverNode(DTROS):
         intersection_count = 0
         i = 0
         while not rospy.is_shutdown() and self.closest_at != 163:
+            # if SYNCHRONOUS:
             self.detect_lane(self.image_msg)
-            if i % 2 == 0:
+            if AT_SYNCHRONOUS and i % 2 == 0:
                 self.at_detected = self.detect_apriltag()
             if self.at_detected:
                 if self.closest_at == 163:
@@ -236,17 +241,22 @@ class DriverNode(DTROS):
         # keep in mind that this keeps checking for april tags
         rate = rospy.Rate(4)
         while not self.at_detected:
+            # if SYNCHRONOUS:
             self.detect_lane(self.image_msg)
-            self.at_detected = self.detect_apriltag()
             self.lane_follow()
+            if AT_SYNCHRONOUS:
+                self.at_detected = self.detect_apriltag()
             rate.sleep()
 
     def drive_to_intersection(self): # and stop
         # new intersection behaviour defined
         rate = rospy.Rate(8)
         while not self.intersection_detected:
-            self.detect_lane(self.image_msg)
             self.detect_intersection()
+            if self.intersection_detected:
+                break
+            # if SYNCHRONOUS:
+            self.detect_lane(self.image_msg)
             self.lane_follow()
             rate.sleep()
 
@@ -267,6 +277,7 @@ class DriverNode(DTROS):
         rate = rospy.Rate(8)
         self.close_to_blue = False
         while not self.close_to_blue:
+            # if SYNCHRONOUS:
             self.detect_lane(self.image_msg)
             self.detect_blue_line(self.image_msg)
             self.lane_follow()
@@ -277,8 +288,11 @@ class DriverNode(DTROS):
         rate = rospy.Rate(4)
         self.close_to_blue = False
         while not self.close_to_blue:
+            self.detect_bot(self.image_msg)
+            if self.close_to_blue:
+                break
+            # if SYNCHRONOUS:
             self.detect_lane(self.image_msg)
-            # self.detect_intersection(self.image_msg) # TODO: replace with blue contour/bot detections
             self.lane_follow()
             rate.sleep()
         # TODO: stop at a suitable distance so we have time to switch lanes
@@ -398,6 +412,9 @@ class DriverNode(DTROS):
         start_time = rospy.get_time()
         while rospy.get_time() < start_time + t:
             continue
+            
+    def detect_bot(self, msg):
+        pass
 
     def detect_lane(self, msg):
         if msg is None:
