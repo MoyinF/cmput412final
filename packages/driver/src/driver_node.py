@@ -24,6 +24,7 @@ DEBUG = False
 ENGLISH = False
 SYNCHRONOUS = True
 AT_SYNCHRONOUS = False
+CALLBACK_PROCESSING = True
 
 
 class DriverNode(DTROS):
@@ -125,17 +126,12 @@ class DriverNode(DTROS):
         if self.veh == "csc22907":
             self.P = 0.020
             self.D = -0.007
-            self.offset = 180
+            # self.offset = 180
+            self.calibration = -0.2
 
         self.camera_center = 340
         self.leader_x = self.camera_center
         self.straight_threshold = 75
-
-        # Stop variables
-        self.last_stop_time = None # last time we stopped
-        self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
-        self.stop_duration = 5 # how long to stop for
-        self.stop_threshold_area = 5000 # minimum area of red to stop at
 
         # Service proxies
         #rospy.wait_for_service(
@@ -146,17 +142,21 @@ class DriverNode(DTROS):
         self.stage = 1
 
         # Turning variables
-        self.left_turn_duration = 1.5
+        self.left_turn_duration = 1.6
         self.right_turn_duration = 1
         self.turn_in_place_duration = 1
-        self.straight_duration = 1
+        self.straight_duration = 2
         self.started_action = None
+
+        # Crosswalk variables
+        self.crosswalk_detected = False
+        self.crosswalk_threshold_area = 4000 # minimum area of blue to detect
 
         # Stop variables
         self.last_stop_time = None # last time we stopped
         self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
-        self.stop_duration = 5 # how long to stop for
-        self.stop_threshold_area = 5000 # minimum area of red to stop at
+        self.stop_duration = 3 # how long to stop for
+        self.stop_threshold_area = 4000 # minimum area of red to stop at
 
         # Parking lot variables
         self.near_stall_distance = 0.4 # metres
@@ -172,8 +172,8 @@ class DriverNode(DTROS):
 
         # Apriltag detection timer
         if not AT_SYNCHRONOUS:
-            self.apriltag_hz = 2
-            self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.detect_apriltag)
+            self.apriltag_hz = 3
+            self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.cb_detect_apriltag)
 
         self.loginfo("Initialized")
 
@@ -182,6 +182,108 @@ class DriverNode(DTROS):
 
     def img_callback(self, msg):
         self.image_msg = msg
+
+        if not CALLBACK_PROCESSING:
+            return
+        
+        # Decode image
+        img = self.jpeg.decode(msg.data)
+        if DEBUG:
+            pub_img = img.copy()
+
+        # DETECT LANE
+        crop = img[300:-1, :, :]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        crop_width = crop.shape[1]
+        mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for lane in front
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                max_idx = i
+                max_area = area
+                if not DEBUG:
+                    break
+
+        if max_idx != -1:
+            M = cv2.moments(contours[max_idx])
+            try:
+                cx = int(M['m10'] / M['m00'])
+                cy = int(M['m01'] / M['m00'])
+                self.proportional = cx - int(crop_width / 2) + self.offset
+                if DEBUG:
+                    cv2.drawContours(pub_img, contours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(pub_img, (cx, cy), 7, (0, 0, 255), -1)
+            except:
+                pass
+        else:
+            self.proportional = None
+        
+        # Detect stop lines if we haven't detected them recently
+        if self.stage in [1, 3] and (not self.last_stop_time or (rospy.get_time() - self.last_stop_time > self.stop_cooldown)):
+            # self.loginfo('detecting stop line')
+            # Mask for stop lines
+            crop = img[400:-1, :, :]
+            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+            stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+            stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+            max_area = self.stop_threshold_area
+            max_idx = -1
+            for i in range(len(stopContours)):
+                area = cv2.contourArea(stopContours[i])
+                if area > max_area:
+                    max_idx = i
+                    max_area = area
+
+            if max_idx != -1:
+                # self.loginfo('detected stop line')
+                self.intersection_detected = True
+                if DEBUG:
+                    M = cv2.moments(stopContours[max_idx])
+                    try:
+                        cx = int(M['m10'] / M['m00'])
+                        cy = int(M['m01'] / M['m00'])
+                        cv2.drawContours(pub_img, stopContours, max_idx, (0, 255, 0), 3)
+                        cv2.circle(pub_img, (cx, cy), 7, (0, 0, 255), -1)
+                    except:
+                        pass
+
+        # DETECT BLUE LINE
+        if self.stage == 2:
+            mask = cv2.inRange(hsv, BLUE_MASK[0], BLUE_MASK[1])
+            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+            # Search for nearest blue line
+            max_area = self.crosswalk_threshold_area
+            max_idx = -1
+            for i in range(len(contours)):
+                area = cv2.contourArea(contours[i])
+                if area > max_area:
+                    max_idx = i
+                    max_area = area
+
+            if max_idx != -1:
+                self.crosswalk_detected = True
+                if DEBUG:
+                    M = cv2.moments(contours[max_idx])
+                    try:
+                        cx = int(M['m10'] / M['m00'])
+                        cy = int(M['m01'] / M['m00'])
+                        cv2.drawContours(pub_img, contours, max_idx, (0, 255, 0), 3)
+                        cv2.circle(pub_img, (cx, cy), 7, (0, 0, 255), -1)
+                    except:
+                        pass
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(pub_img))
+            self.pub_mask.publish(rect_img_msg)
 
     def cb_image_processing(self, _):
         self.detect_lane(self.image_msg)
@@ -199,22 +301,12 @@ class DriverNode(DTROS):
 
     def stage1(self):
         rate = rospy.Rate(8)  # 8hz
-        intersection_count = 0
-        i = 0
         while not rospy.is_shutdown() and self.closest_at != 163:
-            # if SYNCHRONOUS:
-            self.detect_lane(self.image_msg)
-            if AT_SYNCHRONOUS and i % 2 == 0:
-                self.at_detected = self.detect_apriltag()
-            if self.at_detected:
-                if self.closest_at == 163:
-                    break
-                self.drive_to_intersection()
+            if self.intersection_detected:
                 self.intersection_sequence()
             else:
                 self.lane_follow()
-            rate.sleep()
-            i += 1
+                rate.sleep()
 
         self.loginfo("Finished stage 1 :)")
         self.stage += 1
@@ -241,7 +333,8 @@ class DriverNode(DTROS):
         rate = rospy.Rate(4)
         while not self.at_detected:
             # if SYNCHRONOUS:
-            self.detect_lane(self.image_msg)
+            if not CALLBACK_PROCESSING:
+                self.detect_lane(self.image_msg)
             self.lane_follow()
             if AT_SYNCHRONOUS:
                 self.at_detected = self.detect_apriltag()
@@ -251,25 +344,28 @@ class DriverNode(DTROS):
         # new intersection behaviour defined
         rate = rospy.Rate(8)
         while not self.intersection_detected:
-            self.detect_intersection()
+            if not CALLBACK_PROCESSING:
+                self.detect_intersection()
             if self.intersection_detected:
                 break
             # if SYNCHRONOUS:
-            self.detect_lane(self.image_msg)
+            if not CALLBACK_PROCESSING:
+                self.detect_lane(self.image_msg)
             self.lane_follow()
             rate.sleep()
 
         self.stop()
-        self.pass_time(self.stop_duration)
+        # self.pass_time(self.stop_duration)
 
     def drive_to_blue_line(self):
         # like drive_to_intersection but stop farther away to avoid duck murder
         rate = rospy.Rate(8)
-        self.close_to_blue = False
-        while not self.close_to_blue:
+        self.crosswalk_detected = False
+        while not self.crosswalk_detected:
             # if SYNCHRONOUS:
-            self.detect_lane(self.image_msg)
-            self.detect_blue_line(self.image_msg)
+            if not CALLBACK_PROCESSING:
+                self.detect_lane(self.image_msg)
+                self.detect_blue_line(self.image_msg)
             self.lane_follow()
             rate.sleep()
         self.stop()
@@ -311,8 +407,7 @@ class DriverNode(DTROS):
         elif self.closest_at == 50:
             self.left_turn()
         elif self.closest_at == 56:
-            self.pub_straight()
-            self.pass_time(3)
+            self.straight()
         else:
             self.stop()
             self.pass_time(self.stop_duration)
@@ -327,11 +422,14 @@ class DriverNode(DTROS):
         """
         # self.set_lights("right")
         self.loginfo("Turning right")
+        twist = Twist2DStamped()
+        twist.v = self.velocity
+        twist.omega = -2.5
         start_time = rospy.get_time()
+        rate = rospy.Rate(8)
         while rospy.get_time() - start_time < self.right_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
+            self.vel_pub.publish(twist)
+            rate.sleep()
 
     def left_turn(self):
         # TODO: test
@@ -340,11 +438,14 @@ class DriverNode(DTROS):
         """
         # self.set_lights("left")
         self.loginfo("Turning left")
+        twist = Twist2DStamped()
+        twist.v = self.velocity
+        twist.omega = 2
         start_time = rospy.get_time()
+        rate = rospy.Rate(8)
         while rospy.get_time() - start_time < self.left_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
+            self.vel_pub.publish(twist)
+            rate.sleep()
 
     def stop(self):
         self.twist.v = 0
@@ -352,14 +453,21 @@ class DriverNode(DTROS):
         self.vel_pub.publish(self.twist)
         # self.set_lights("stop")
 
-    def pub_straight(self, linear=None):
+    def straight(self, linear=None):
         # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
-        self.twist.v = self.velocity
+        twist = Twist2DStamped()
+        twist.v = self.velocity
         if linear is not None:
-            self.twist.omega = linear
+            twist.omega = linear
         else:
-            self.twist.omega = self.calibration
-        self.vel_pub.publish(self.twist)
+            twist.omega = self.calibration
+
+        self.loginfo("Going straight")
+        start_time = rospy.get_time()
+        rate = rospy.Rate(8)
+        while rospy.get_time() - start_time < self.straight_duration:
+            self.vel_pub.publish(twist)
+            rate.sleep()
 
     def pass_time(self, t):
         start_time = rospy.get_time()
@@ -374,7 +482,8 @@ class DriverNode(DTROS):
             if self.close_to_blue:
                 break
             # if SYNCHRONOUS:
-            self.detect_lane(self.image_msg)
+            if not CALLBACK_PROCESSING:
+                self.detect_lane(self.image_msg)
             self.lane_follow()
             rate.sleep()
         # TODO: stop at a suitable distance so we have time to switch lanes
@@ -386,9 +495,9 @@ class DriverNode(DTROS):
 
     def avoid_ducks(self):
         self.stop() # just to make sure
-        ducks_present = self.check_for_ducks(self.image_msg)
+        ducks_present = self.check_for_ducks()
         if ducks_present:
-            while self.check_for_ducks(self.image_msg):
+            while self.check_for_ducks():
                 self.pass_time(1)
             self.pass_time(5)
         else:
@@ -562,20 +671,22 @@ class DriverNode(DTROS):
         for i in range(len(stopContours)):
             area = cv2.contourArea(stopContours[i])
             if area > max_area:
+                if not DEBUG:
+                    break
                 max_idx = i
                 max_area = area
 
         if max_idx != -1:
-            M = cv2.moments(stopContours[max_idx])
-            try:
-                cx = int(M['m10'] / M['m00'])
-                cy = int(M['m01'] / M['m00'])
-                self.intersection_detected = True
-                if DEBUG:
+            self.intersection_detected = True
+            if DEBUG:
+                M = cv2.moments(stopContours[max_idx])
+                try:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
                     cv2.drawContours(crop, stopContours, max_idx, (0, 255, 0), 3)
                     cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
-            except:
-                pass
+                except:
+                    pass
         else:
             self.intersection_detected = False
 
@@ -627,6 +738,51 @@ class DriverNode(DTROS):
                 self.closest_at = closest.tag_id
                 return True
         return False
+    
+    def cb_detect_apriltag(self, _):
+        if self.image_msg is None:
+            return False
+        img_msg = self.image_msg
+        # detect an intersection by finding the corresponding apriltags
+        cv_image = None
+        try:
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
+        except CvBridgeError as e:
+            self.log(e)
+            return []
+
+        # undistort the image
+        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(
+            self.K, self.DC, (self.w, self.h), 0, (self.w, self.h))
+        image_np = cv2.undistort(cv_image, self.K, self.DC, None, newcameramtx)
+
+        # convert the image to black and white
+        image_gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+
+        # detect tags present in image
+        tags = self.at_detector.detect(
+            image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
+
+        closest_tag_z = 1000
+        closest = None
+
+        for tag in tags:
+            # ignore distant tags and tags with bad decoding
+            z = tag.pose_t[2][0]
+            if tag.decision_margin < self.decision_threshold or z > self.z_threshold:
+                continue
+
+            # update the closest-detected tag if needed
+            if z < closest_tag_z:
+                closest_tag_z = z
+                closest = tag
+
+        if closest and closest.tag_id in self.apriltags:
+            self.at_distance = closest.pose_t[2][0]
+            self.closest_at = closest.tag_id
+            self.at_detected = True
+        else:
+            self.at_detected = False
 
     def detect_blue_line(self, msg):
         if msg is None:
@@ -766,7 +922,7 @@ class DriverNode(DTROS):
             msg.color_mask = [0, 0, 0, 0, 0]
             msg.frequency = 0
             msg.frequency_mask = [0, 0, 0, 0, 0]
-        self.led_service(msg)
+        # self.led_service(msg)
 
     def hook(self):
         print("SHUTTING DOWN")
