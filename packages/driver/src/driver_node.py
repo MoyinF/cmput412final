@@ -152,6 +152,7 @@ class DriverNode(DTROS):
         # Turning variables
         self.left_turn_duration = 1.5
         self.right_turn_duration = 1
+        self.turn_in_place_duration = 1
         self.straight_duration = 1
         self.started_action = None
 
@@ -160,7 +161,14 @@ class DriverNode(DTROS):
         self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
         self.stop_duration = 5 # how long to stop for
         self.stop_threshold_area = 5000 # minimum area of red to stop at
-
+        
+        # Parking lot variables
+        self.near_stall_distance = 0.4 # metres
+        self.far_stall_distance = 0.2 # metres
+        self.clockwise = 'CLOCKWISE'
+        self.counterclockwise = 'COUNTERCLOCKWISE'
+        self.opposite_at_distance = 1.5 # metres
+        
         # Image processing detection timer
         if not SYNCHRONOUS:
             self.image_processing_hz = 8
@@ -189,7 +197,7 @@ class DriverNode(DTROS):
     def run(self):
         self.stage1()
         self.stage2()
-        #self.stage3()
+        self.stage3()
         self.stop()
         rospy.signal_shutdown("Program terminating.")
 
@@ -225,14 +233,18 @@ class DriverNode(DTROS):
         self.lane_follow()
 
     def stage3(self):
+        # continue lane following until next apriltag is seen
+        """
         self.sprint()
         if self.closest_at != 38:
             rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
         rospy.loginfo("PARKING.")
+        
+        # approach entance of parking lot and stop
+        """
         self.drive_to_intersection()
-        self.pub_straight()
-        while self.at_distance > 0.4:
-            continue
+        
+        # park the vehicle
         if self.closest_at != 227:
             rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
         self.park(self.stall)
@@ -313,20 +325,55 @@ class DriverNode(DTROS):
             self.pass_time(5)
 
     def park(self, stall):
-        # TODO
+        # advance into parking lot until perpendicular to desired stall
+        target_distance = 0
+        if stall == 1 or stall == 3:
+            target_distance = self.far_stall_distance
+        else:
+            target_distance = self.near_stall_distance
+        
+        self.straight()
+        while self.at_distance > target_distance:
+            continue
+            
+        # turn the vehicle such that it faces away from the target stall
+        at_opposite = None
+        turn_direction = None
         if stall == 1:
-            pass
+            at_opposite = 228 # stall 3
+            turn_direction = self.clockwise
+            
         elif stall == 2:
-            pass
+            at_opposite = 75 # stall 4
+            turn_direction = self.clockwise
+            
         elif stall == 3:
-            pass
+            at_opposite = 207 # stall 1
+            turn_direction = self.counterclockwise
+            
         elif stall == 4:
-            pass
+            at_opposite = 226 # stall 2
+            turn_direction = self.counterclockwise
+            
         else:
             rospy.loginfo("WARNING: Wrong input for parking stall number.")
             rospy.loginfo("Automatically backing into stall 3.")
+            
+        self.face_apriltag(turn_direction, at_opposite)
+        
+        # reverse into parking stall
+        self.reverse_to_stall(at_opposite)
+        
+    def reverse_to_stall(self, at_opposite):
+        self.twist.v = -self.velocity
+        self.twist.omega = -self.calibration
+        
+        while self.detect_apriltag_by_id(at_opposite)[3] < self.opposite_at_distance:
+            self.vel_pub.publish(self.twist)
+            
+        self.stop()
 
-    def lane_follow(self): # TODO: improve so it stops moving off the road at turns
+    def lane_follow(self):
         if self.proportional is None:
             self.twist.omega = 0
         else:
@@ -392,6 +439,24 @@ class DriverNode(DTROS):
             self.twist.v = self.velocity
             self.twist.omega = 2.5
             self.vel_pub.publish(self.twist)
+            
+    def face_apriltag(self, turn_direction, apriltag):
+        """
+        Turn until apriltag is in center of image
+        """
+        self.loginfo(f"Turning to face apriltag {apriltag}")
+        
+        self.twist.v = 0
+        if turn_direction == self.clockwise:
+            self.twist.omega = -2.5
+            self.vel_pub.publish(self.twist)
+            while self.detect_apriltag_by_id(apriltag)[0] >= 0:
+                continue
+        else:
+            self.twist.omega = 2.5
+            self.vel_pub.publish(self.twist)
+            while self.detect_apriltag_by_id(apriltag)[0] <= 0:
+                continue
 
     def stop(self):
         self.twist.v = 0
@@ -458,6 +523,48 @@ class DriverNode(DTROS):
             rect_img_msg = CompressedImage(
                 format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
+
+        if closest:
+            if closest.tag_id in self.apriltags:
+                self.at_distance = closest.pose_t[2][0]
+                self.closest_at = closest.tag_id
+                self.at_detected = True
+        self.at_detected = False
+
+    def detect_apriltag_by_id(self, apriltag):
+        # Reutrns the x, y, z coordinate of a specific apriltag
+        img_msg = self.image_msg
+        if not img_msg:
+            return (0, 0, 0)
+        
+        cv_image = None
+        try:
+            cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
+        except CvBridgeError as e:
+            self.log(e)
+            return []
+
+        # undistort the image
+        newcameramtx, _ = cv2.getOptimalNewCameraMatrix(
+            self.K, self.DC, (self.w, self.h), 0, (self.w, self.h))
+        image_np = cv2.undistort(cv_image, self.K, self.DC, None, newcameramtx)
+
+        # convert the image to black and white
+        image_gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
+
+        # detect tags present in image
+        tags = self.at_detector.detect(
+            image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
+
+        if len(tags) == 0:
+            return (0, 0, 0)
+
+        for tag in tags:
+            if tag.tag_id == apriltag:
+                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0])
+
+        return (0, 0, 0)
+
 
     def detect_intersection(self):
         msg = self.image_msg
@@ -642,6 +749,62 @@ class DriverNode(DTROS):
 
         return found_ducks
 
+    def check_for_ducks(self):
+        msg = self.image_msg
+        if not msg:
+            return
+        
+        found_ducks = False
+        
+        crop = self.jpeg.decode(msg.data)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        
+        yellow_mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
+        orange_mask = cv2.inRange(hsv, ORANGE_MASK[0], ORANGE_MASK[1])
+        combined_mask = cv2.bitwise_or(yellow_mask, orange_mask)
+        crop = cv2.bitwise_and(crop, crop, mask=combined_mask)
+        
+        yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        orange_contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for nearest ducks
+        min_area = 50
+        for yellow_contour in yellow_contours:
+            for orange_contour in orange_contours:
+                
+                area = cv2.contourArea(yellow_contour)
+                if area > min_area:
+                    M1 = cv2.moments(yellow_contour)
+                    M2 = cv2.moments(orange_contour)
+                    
+
+                    try:
+                        cx1 = int(M1['m10'] / M1['m00'])
+                        cy1 = int(M1['m01'] / M1['m00'])
+                        cx2 = int(M2['m10'] / M2['m00'])
+                        cy2 = int(M2['m01'] / M2['m00'])
+                    
+                        distance = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
+                    
+                        if distance < 40:
+                            found_ducks = True
+                        
+                            if DEBUG:
+                                cv2.drawContours(crop, [yellow_contour], -1, (0, 255, 0), 3)
+                                cv2.drawContours(crop, [orange_contour], -1, (0, 255, 0), 3)
+                                cv2.circle(crop, (cx1, cy1), 7, (0, 0, 255), -1)
+
+                    except:
+                        pass
+
+        # debugging
+        if DEBUG:
+            rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+            
+        return found_ducks
+
     def right_turn_(self):
         # self.set_lights("right")
         self.twist.v = 0
@@ -695,7 +858,7 @@ class DriverNode(DTROS):
     def readYamlFile(self, fname):
         with open(fname, 'r') as in_file:
             try:
-                yaml_dict = yaml.load(in_file)
+                yaml_dict = yaml.load(in_file, Loader=yaml.FullLoader)
                 return yaml_dict
             except yaml.YAMLError as exc:
                 self.log("YAML syntax error. File: %s fname. Exc: %s"
@@ -707,3 +870,4 @@ class DriverNode(DTROS):
 if __name__ == "__main__":
     node = DriverNode("driver_node")
     node.run()
+    rospy.spin()
