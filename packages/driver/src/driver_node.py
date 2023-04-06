@@ -175,6 +175,13 @@ class DriverNode(DTROS):
     def img_callback(self, msg):
         self.image_msg = msg
 
+    def cb_image_processing(self, _):
+        self.detect_lane()
+        if self.stage in [1, 3]:
+            self.detect_intersection()
+        if self.stage == 2:
+            self.detect_blue_line()
+
     def run(self):
         self.stage1()
         self.stage2()
@@ -339,6 +346,9 @@ class DriverNode(DTROS):
         elif self.closest_at == 56:
             self.pub_straight()
             self.pass_time(3)
+        else:
+            self.stop()
+            self.pass_time(self.stop_duration)
 
         self.last_stop_time = rospy.get_time()
         self.intersection_detected = False
