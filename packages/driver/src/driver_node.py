@@ -427,24 +427,6 @@ class DriverNode(DTROS):
             self.twist.omega = 2.5
             self.vel_pub.publish(self.twist)
 
-    def face_apriltag(self, turn_direction, apriltag):
-        """
-        Turn until apriltag is in center of image
-        """
-        self.loginfo(f"Turning to face apriltag {apriltag}")
-
-        self.twist.v = 0
-        if turn_direction == self.clockwise:
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
-            while self.detect_apriltag_by_id(apriltag)[0] >= 0:
-                continue
-        else:
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
-            while self.detect_apriltag_by_id(apriltag)[0] <= 0:
-                continue
-
     def stop(self):
         self.twist.v = 0
         self.twist.omega = 0
@@ -465,6 +447,24 @@ class DriverNode(DTROS):
         while rospy.get_time() < start_time + t:
             continue
 
+    def face_apriltag(self, turn_direction, apriltag):
+        """
+        Turn until apriltag is in center of image
+        """
+        self.loginfo(f"Turning to face apriltag {apriltag}")
+
+        self.twist.v = 0
+        if turn_direction == self.clockwise:
+            self.twist.omega = -2.5
+            self.vel_pub.publish(self.twist)
+            while self.detect_apriltag_by_id(apriltag)[0] >= 0:
+                continue
+        else:
+            self.twist.omega = 2.5
+            self.vel_pub.publish(self.twist)
+            while self.detect_apriltag_by_id(apriltag)[0] <= 0:
+                continue
+                
     def detect_bot(self, msg):
         pass
 
