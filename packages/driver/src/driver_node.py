@@ -283,6 +283,89 @@ class DriverNode(DTROS):
         # i.e. if we can't see yellow, stop, correct, then keep driving.
         return
 
+    def lane_follow(self):
+        if self.proportional is None:
+            self.twist.omega = 0
+        else:
+            # P Term
+            P = -self.proportional * self.P
+
+            # D Term
+            d_error = (self.proportional - self.last_error) / \
+                (rospy.get_time() - self.last_time)
+            self.last_error = self.proportional
+            self.last_time = rospy.get_time()
+            D = d_error * self.D
+
+            self.twist.v = self.velocity
+            self.twist.omega = P + D
+
+        self.vel_pub.publish(self.twist)
+
+    def intersection_sequence(self):
+        self.stop()
+        self.pass_time(self.stop_duration)
+        # Determine which direction to go, based on apriltag
+        if self.closest_at == 48:
+            self.right_turn()
+        elif self.closest_at == 50:
+            self.left_turn()
+        elif self.closest_at == 56:
+            self.pub_straight()
+            self.pass_time(3)
+        else:
+            self.stop()
+            self.pass_time(self.stop_duration)
+
+        self.last_stop_time = rospy.get_time()
+        self.intersection_detected = False
+
+    def right_turn(self):
+        # TODO: test
+        """
+        Publish right-angle right turn
+        """
+        # self.set_lights("right")
+        self.loginfo("Turning right")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.right_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = -2.5
+            self.vel_pub.publish(self.twist)
+
+    def left_turn(self):
+        # TODO: test
+        """
+        Publish right-angle left turn
+        """
+        # self.set_lights("left")
+        self.loginfo("Turning left")
+        start_time = rospy.get_time()
+        while rospy.get_time() - start_time < self.left_turn_duration:
+            self.twist.v = self.velocity
+            self.twist.omega = 2.5
+            self.vel_pub.publish(self.twist)
+
+    def stop(self):
+        self.twist.v = 0
+        self.twist.omega = 0
+        self.vel_pub.publish(self.twist)
+        # self.set_lights("stop")
+
+    def pub_straight(self, linear=None):
+        # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
+        self.twist.v = self.velocity
+        if linear is not None:
+            self.twist.omega = linear
+        else:
+            self.twist.omega = self.calibration
+        self.vel_pub.publish(self.twist)
+
+    def pass_time(self, t):
+        start_time = rospy.get_time()
+        while rospy.get_time() < start_time + t:
+            continue
+
     def check_for_bot(self):
         rate = rospy.Rate(4)
         self.close_to_blue = False
@@ -360,93 +443,6 @@ class DriverNode(DTROS):
 
         self.stop()
 
-    def lane_follow(self):
-        if self.proportional is None:
-            self.twist.omega = 0
-        else:
-            # P Term
-            P = -self.proportional * self.P
-
-            # D Term
-            d_error = (self.proportional - self.last_error) / \
-                (rospy.get_time() - self.last_time)
-            self.last_error = self.proportional
-            self.last_time = rospy.get_time()
-            D = d_error * self.D
-
-            self.twist.v = self.velocity
-            self.twist.omega = P + D
-
-        self.vel_pub.publish(self.twist)
-
-    def intersection_sequence(self):
-        self.stop()
-        self.pass_time(self.stop_duration)
-        # Determine which direction to go, based on apriltag
-        if self.closest_at == 48:
-            # self.pub_straight()
-            # self.pass_time(1.5)
-            self.right_turn()
-        elif self.closest_at == 50:
-            # self.pub_straight()
-            # self.pass_time(1.5)
-            self.left_turn()
-        elif self.closest_at == 56:
-            self.pub_straight()
-            self.pass_time(3)
-        else:
-            self.stop()
-            self.pass_time(self.stop_duration)
-
-        self.last_stop_time = rospy.get_time()
-        self.intersection_detected = False
-
-    def right_turn(self):
-        # TODO: test
-        """
-        Publish right-angle right turn
-        """
-        # self.set_lights("right")
-        self.loginfo("Turning right")
-        start_time = rospy.get_time()
-        while rospy.get_time() - start_time < self.right_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
-
-    def left_turn(self):
-        # TODO: test
-        """
-        Publish right-angle left turn
-        """
-        # self.set_lights("left")
-        self.loginfo("Turning left")
-        start_time = rospy.get_time()
-        while rospy.get_time() - start_time < self.left_turn_duration:
-            self.twist.v = self.velocity
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
-
-    def stop(self):
-        self.twist.v = 0
-        self.twist.omega = 0
-        self.vel_pub.publish(self.twist)
-        # self.set_lights("stop")
-
-    def pub_straight(self, linear=None):
-        # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
-        self.twist.v = self.velocity
-        if linear is not None:
-            self.twist.omega = linear
-        else:
-            self.twist.omega = self.calibration
-        self.vel_pub.publish(self.twist)
-
-    def pass_time(self, t):
-        start_time = rospy.get_time()
-        while rospy.get_time() < start_time + t:
-            continue
-
     def face_apriltag(self, turn_direction, apriltag):
         """
         Turn until apriltag is in center of image
@@ -464,7 +460,7 @@ class DriverNode(DTROS):
             self.vel_pub.publish(self.twist)
             while self.detect_apriltag_by_id(apriltag)[0] <= 0:
                 continue
-                
+
     def detect_bot(self, msg):
         pass
 
@@ -681,61 +677,6 @@ class DriverNode(DTROS):
                 format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
-    def check_for_ducks(self, msg):
-        found_ducks = False
-
-        img = self.jpeg.decode(msg.data)
-        crop = img[:, :, :]
-        crop_height = crop.shape[0]
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-
-        yellow_mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
-        orange_mask = cv2.inRange(hsv, ORANGE_MASK[0], ORANGE_MASK[1])
-        combined_mask = cv2.bitwise_or(yellow_mask, orange_mask)
-        crop = cv2.bitwise_and(crop, crop, mask=combined_mask)
-
-        yellow_contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-        orange_contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-
-        # Search for nearest ducks
-        min_area = 50
-        max_idx = -1
-        for yellow_contour in yellow_contours:
-            for orange_contour in orange_contours:
-
-                area = cv2.contourArea(yellow_contour)
-                if area > min_area:
-                    M1 = cv2.moments(yellow_contour)
-                    M2 = cv2.moments(orange_contour)
-
-
-                    try:
-                        cx1 = int(M1['m10'] / M1['m00'])
-                        cy1 = int(M1['m01'] / M1['m00'])
-                        cx2 = int(M2['m10'] / M2['m00'])
-                        cy2 = int(M2['m01'] / M2['m00'])
-
-                        distance = np.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2)
-
-                        if distance < 40:
-                            found_ducks = True
-
-                            if DEBUG:
-                                cv2.drawContours(crop, [yellow_contour], -1, (0, 255, 0), 3)
-                                cv2.drawContours(crop, [orange_contour], -1, (0, 255, 0), 3)
-                                cv2.circle(crop, (cx1, cy1), 7, (0, 0, 255), -1)
-
-                    except:
-                        pass
-
-        # debugging
-        if DEBUG:
-            rect_img_msg = CompressedImage(
-                format="jpeg", data=self.jpeg.encode(crop))
-            self.pub_mask.publish(rect_img_msg)
-
-        return found_ducks
-
     def check_for_ducks(self):
         msg = self.image_msg
         if not msg:
@@ -793,7 +734,7 @@ class DriverNode(DTROS):
         return found_ducks
 
     def right_turn_(self):
-        # self.set_lights("right")
+        # outdated
         self.twist.v = 0
         self.twist.omega = -12
         self.vel_pub.publish(self.twist)
@@ -802,7 +743,7 @@ class DriverNode(DTROS):
             continue
 
     def left_turn_(self):
-        # self.set_lights("left")
+        # outdated
         self.twist.v = 0
         self.twist.omega = 12
         self.vel_pub.publish(self.twist)
