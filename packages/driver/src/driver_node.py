@@ -507,13 +507,6 @@ class DriverNode(DTROS):
                 format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
-        if closest:
-            if closest.tag_id in self.apriltags:
-                self.at_distance = closest.pose_t[2][0]
-                self.closest_at = closest.tag_id
-                self.at_detected = True
-        self.at_detected = False
-
     def detect_apriltag_by_id(self, apriltag):
         # Reutrns the x, y, z coordinate of a specific apriltag
         img_msg = self.image_msg
