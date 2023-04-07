@@ -4,7 +4,7 @@ import rospy
 
 from duckietown.dtros import DTROS, NodeType
 from sensor_msgs.msg import CameraInfo, CompressedImage
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Header, ColorRGBA
 from turbojpeg import TurboJPEG
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
@@ -18,7 +18,8 @@ import yaml
 YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for yellow mask
 BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
 ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
-STOP_MASK = [(0, 75, 150), (5, 150, 255)] # for stop lines
+STOP_MASK1 = [(0, 75, 150), (5, 150, 255)] # for stop lines
+STOP_MASK2 = [(175, 75, 150), (179, 150, 255)] # for stop lines
 
 DEBUG = False
 ENGLISH = False
@@ -37,12 +38,13 @@ class DriverNode(DTROS):
         self.stall = None # TODO: Get stall number as launch parameter
 
         # Subscribers
-        self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
+        self.sub_camera = rospy.Subscriber(f"/{self.veh}/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
 
         # Publishers
-        self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
+        self.vel_pub = rospy.Publisher(f"/{self.veh}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
         self.pub_wheel_commands = rospy.Publisher(f'/{self.veh}/wheels_driver_node/wheels_cmd', WheelsCmdStamped, queue_size=1)
-        self.pub_mask = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed", CompressedImage, queue_size=1)
+        self.pub_mask = rospy.Publisher(f"/{self.veh}/output/image/mask/compressed", CompressedImage, queue_size=1)
+        self.led_publisher = rospy.Publisher(f"/{self.veh}/led_emitter_node/led_pattern", LEDPattern, queue_size=1)
         self.pub_img_bool = DEBUG
 
         # image processing tools
@@ -104,6 +106,12 @@ class DriverNode(DTROS):
         self.at_detected = False
         self.closest_at = None
 
+        # Initialize LED color-changing
+        self.pattern = LEDPattern()
+        self.pattern.header = Header()
+        for _ in range(5):
+            self.initialize_white_leds()
+
         # apriltag detection filters
         self.decision_threshold = 10
         self.z_threshold = 0.55
@@ -126,8 +134,10 @@ class DriverNode(DTROS):
         if self.veh == "csc22907":
             self.P = 0.020
             self.D = -0.007
-            # self.offset = 180
-            self.calibration = -0.2
+            self.offset = 180
+            if ENGLISH:
+                self.offset = -180
+            self.calibration = -0.15
 
         self.camera_center = 340
         self.leader_x = self.camera_center
@@ -156,7 +166,7 @@ class DriverNode(DTROS):
         self.last_stop_time = None # last time we stopped
         self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
         self.stop_duration = 3 # how long to stop for
-        self.stop_threshold_area = 4000 # minimum area of red to stop at
+        self.stop_threshold_area = 3700 # minimum area of red to stop at
 
         # Parking lot variables
         self.near_stall_distance = 0.4 # metres
@@ -230,7 +240,9 @@ class DriverNode(DTROS):
             # Mask for stop lines
             crop = img[400:-1, :, :]
             hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+            stopMask1 = cv2.inRange(hsv, STOP_MASK1[0], STOP_MASK1[1])
+            stopMask2 = cv2.inRange(hsv, STOP_MASK2[0], STOP_MASK2[1])
+            stopMask = cv2.bitwise_or(stopMask2, stopMask1)
             stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
             max_area = self.stop_threshold_area
@@ -424,7 +436,7 @@ class DriverNode(DTROS):
         self.loginfo("Turning right")
         twist = Twist2DStamped()
         twist.v = self.velocity
-        twist.omega = -2.5
+        twist.omega = -2.25
         start_time = rospy.get_time()
         rate = rospy.Rate(8)
         while rospy.get_time() - start_time < self.right_turn_duration:
@@ -923,6 +935,25 @@ class DriverNode(DTROS):
             msg.frequency = 0
             msg.frequency_mask = [0, 0, 0, 0, 0]
         # self.led_service(msg)
+
+    def initialize_white_leds(self):
+        '''
+        Code for this function was inspired by 
+        "duckietown/dt-core", file "led_emitter_node.py"
+        Link: https://github.com/duckietown/dt-core/blob/daffy/packages/led_emitter/src/led_emitter_node.py
+        Author: GitHub user liampaull
+        '''
+        self.pattern.header.stamp = rospy.Time.now()
+        rgba = ColorRGBA()
+
+        # All white
+        rgba.r = 1.0
+        rgba.g = 1.0
+        rgba.b = 1.0
+        rgba.a = 1.0
+
+        self.pattern.rgb_vals = [rgba] * 5
+        self.led_publisher.publish(self.pattern)
 
     def hook(self):
         print("SHUTTING DOWN")
