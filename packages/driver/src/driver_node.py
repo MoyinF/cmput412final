@@ -33,7 +33,7 @@ class DriverNode(DTROS):
             node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
-        self.stall = None # TODO: Get stall number as launch parameter
+        self.stall = 1 # TODO: Get stall number as launch parameter
 
         # Subscribers
         self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
@@ -229,11 +229,7 @@ class DriverNode(DTROS):
         self.lane_follow()
 
     def stage3(self):
-        # approach entance of parking lot and stop
         self.drive_to_intersection()
-        # park the vehicle
-        if self.closest_at != 227:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
         self.park(self.stall)
 
     def sprint(self):
@@ -301,6 +297,43 @@ class DriverNode(DTROS):
             self.twist.omega = P + D
 
         self.vel_pub.publish(self.twist)
+        
+    def apriltag_follow(self, apriltag, direction, distance):
+        rate = rospy.Rate(8)
+        last_error = 0
+        last_time = rospy.get_time()
+        
+        while True:
+            x, y, z = self.detect_apriltag_by_id(apriltag)
+            
+            if direction == "FORWARD" and z <= distance and z != 0:
+                break
+            elif direction == "REVERSE" and z >= distance and z != 0:
+                break
+    
+            # P Term
+            p_error = x * 1000
+            P = -p_error * self.P
+
+            # D Term
+            d_error = (p_error - last_error) / (rospy.get_time() - last_time)
+            last_error = p_error
+            last_time = rospy.get_time()
+            D = d_error * self.D
+
+            if direction == "FORWARD":
+                self.twist.v = self.velocity
+            else:
+                self.twist.v = -self.velocity
+                
+            self.twist.omega = P + D
+
+            self.vel_pub.publish(self.twist)
+            
+            rate.sleep()
+            
+        self.stop()
+            
 
     def intersection_sequence(self):
         self.stop()
@@ -402,9 +435,10 @@ class DriverNode(DTROS):
         else:
             target_distance = self.near_stall_distance
 
-        self.straight()
-        while self.at_distance > target_distance:
-            continue
+        self.apriltag_follow(227, "FORWARD", target_distance)
+        # self.pub_straight()
+        # while self.detect_apriltag_by_id(227)[2] > target_distance:
+        #     continue
 
         # turn the vehicle such that it faces away from the target stall
         at_opposite = None
@@ -425,20 +459,20 @@ class DriverNode(DTROS):
             at_opposite = 226 # stall 2
             turn_direction = self.counterclockwise
 
-        else:
-            rospy.loginfo("WARNING: Wrong input for parking stall number.")
-            rospy.loginfo("Automatically backing into stall 3.")
-
         self.face_apriltag(turn_direction, at_opposite)
+        
+        # advance forward to opposite stall
+        self.apriltag_follow(at_opposite, "FORWARD", 0.5)
 
         # reverse into parking stall
-        self.reverse_to_stall(at_opposite)
+        self.apriltag_follow(at_opposite, "REVERSE", self.opposite_at_distance)
+        # self.reverse_to_stall(at_opposite)
 
     def reverse_to_stall(self, at_opposite):
         self.twist.v = -self.velocity
         self.twist.omega = -self.calibration
 
-        while self.detect_apriltag_by_id(at_opposite)[3] < self.opposite_at_distance:
+        while self.detect_apriltag_by_id(at_opposite)[2] < self.opposite_at_distance:
             self.vel_pub.publish(self.twist)
 
         self.stop()
@@ -518,7 +552,7 @@ class DriverNode(DTROS):
             cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
         except CvBridgeError as e:
             self.log(e)
-            return []
+            return (0, 0, 0)
 
         # undistort the image
         newcameramtx, _ = cv2.getOptimalNewCameraMatrix(
@@ -537,6 +571,14 @@ class DriverNode(DTROS):
 
         for tag in tags:
             if tag.tag_id == apriltag:
+                if DEBUG:
+                    for i in range(len(tag.corners)):
+                        point_x = tuple(tag.corners[i-1, :].astype(int))
+                        point_y = tuple(tag.corners[i, :].astype(int))
+                        cv2.line(image_np, point_x, point_y, (0, 255, 0), 5)
+                    rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(image_np))
+                    self.pub_mask.publish(rect_img_msg)
+            
                 return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0])
 
         return (0, 0, 0)
