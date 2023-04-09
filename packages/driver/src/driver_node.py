@@ -185,7 +185,7 @@ class DriverNode(DTROS):
 
         if not CALLBACK_PROCESSING:
             return
-        
+
         # Decode image
         img = self.jpeg.decode(msg.data)
         if DEBUG:
@@ -223,7 +223,7 @@ class DriverNode(DTROS):
                 pass
         else:
             self.proportional = None
-        
+
         # Detect stop lines if we haven't detected them recently
         if self.stage in [1, 3] and (not self.last_stop_time or (rospy.get_time() - self.last_stop_time > self.stop_cooldown)):
             # self.loginfo('detecting stop line')
@@ -371,12 +371,9 @@ class DriverNode(DTROS):
         self.stop()
 
     def correct(self):
-        # TODO: currently when the bot stops it stops at an angle that prevents it from seeing
-        # the yellow tape. I was thinking that if we add code for it to "correct" itself
-        # i.e. re-orient itself so it sees the yellow lines properly
-        # we won't have the problem of it driving off the road when it stops detecting the yellow
-        # we could also add a flag for this within the drive function,
-        # i.e. if we can't see yellow, stop, correct, then keep driving.
+        # TODO: will be used when the duckiebot stops, before continuing
+        # check if yellow contours in frame (or in crop of frame)
+        # if not, turn left (for right lane following) and then continue lane following
         return
 
     def lane_follow(self):
@@ -738,7 +735,7 @@ class DriverNode(DTROS):
                 self.closest_at = closest.tag_id
                 return True
         return False
-    
+
     def cb_detect_apriltag(self, _):
         if self.image_msg is None:
             return False
