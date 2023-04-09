@@ -107,8 +107,9 @@ class DriverNode(DTROS):
         # Initialize LED color-changing
         self.pattern = LEDPattern()
         self.pattern.header = Header()
-        for _ in range(5):
-            self.set_LEDs(True)
+        if self.veh != "csc22906":
+            for _ in range(5):
+                self.set_LEDs(True)
 
         # apriltag detection filters
         self.decision_threshold = 10
@@ -797,9 +798,9 @@ class DriverNode(DTROS):
                     cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
 
                 if cy > int(crop_height * (2/3)):
-                    self.close_to_blue = True
+                    self.crosswalk_detected = True
                 else:
-                    self.close_to_blue = False
+                    self.crosswalk_detected = False
             except:
                 pass
 
@@ -916,7 +917,7 @@ class DriverNode(DTROS):
 
     def set_LEDs(self, on = True):
         '''
-        Code for this function was inspired by 
+        Code for this function was inspired by
         "duckietown/dt-core", file "led_emitter_node.py"
         Link: https://github.com/duckietown/dt-core/blob/daffy/packages/led_emitter/src/led_emitter_node.py
         Author: GitHub user liampaull
@@ -945,7 +946,8 @@ class DriverNode(DTROS):
         self.vel_pub.publish(self.twist)
         for _ in range(8):
             self.vel_pub.publish(self.twist)
-            self.set_LEDs(False)
+            if self.veh != "csc22906":
+                self.set_LEDs(False)
 
     def readYamlFile(self, fname):
         with open(fname, 'r') as in_file:
