@@ -19,6 +19,7 @@ YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for yellow mask
 BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
 ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
 STOP_MASK = [(0, 75, 150), (5, 150, 255)] # for stop lines
+ROBOT_MASK = [(100, 90, 60), (140, 190, 130)]
 
 DEBUG = False
 ENGLISH = False
@@ -158,6 +159,8 @@ class DriverNode(DTROS):
         self.stop_duration = 3 # how long to stop for
         self.stop_threshold_area = 4000 # minimum area of red to stop at
 
+        self.bot_detected = False
+
         # Parking lot variables
         self.near_stall_distance = 0.4 # metres
         self.far_stall_distance = 0.2 # metres
@@ -185,7 +188,7 @@ class DriverNode(DTROS):
 
         if not CALLBACK_PROCESSING:
             return
-        
+
         # Decode image
         img = self.jpeg.decode(msg.data)
         if DEBUG:
@@ -223,7 +226,7 @@ class DriverNode(DTROS):
                 pass
         else:
             self.proportional = None
-        
+
         # Detect stop lines if we haven't detected them recently
         if self.stage in [1, 3] and (not self.last_stop_time or (rospy.get_time() - self.last_stop_time > self.stop_cooldown)):
             # self.loginfo('detecting stop line')
@@ -476,10 +479,10 @@ class DriverNode(DTROS):
 
     def check_for_bot(self):
         rate = rospy.Rate(4)
-        self.close_to_blue = False
-        while not self.close_to_blue:
+        self.bot_detected = False
+        while not self.bot_detected:
             self.detect_bot(self.image_msg)
-            if self.close_to_blue:
+            if self.bot_detected:
                 break
             # if SYNCHRONOUS:
             if not CALLBACK_PROCESSING:
@@ -491,7 +494,15 @@ class DriverNode(DTROS):
 
     def switch_lanes(self):
         # TODO: Probably switch to English driver. Keep moving till (?). Then switch back.
-        pass
+        t = 2
+        self.offset = -170
+        rate = rospy.Rate(8)
+        start_time = rospy.get_time()
+        while rospy.get_time() < start_time + t:
+            self.lane_follow()
+            rate.sleep()
+        self.offset = 170
+
 
     def avoid_ducks(self):
         self.stop() # just to make sure
@@ -571,7 +582,47 @@ class DriverNode(DTROS):
                 continue
 
     def detect_bot(self, msg):
-        pass
+        msg = self.image_msg
+
+        # Don't detect we don't have a message or we only recently detected an intersection
+        if not msg or (self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown):
+            return
+
+        img = self.jpeg.decode(msg.data)
+        crop = img[0:300, :, :]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        stopMask = cv2.inRange(hsv, ROBOT_MASK[0], ROBOT_MASK[1])
+        stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for bot in front
+        max_area = 50
+        max_idx = -1
+        for i in range(len(stopContours)):
+            area = cv2.contourArea(stopContours[i])
+            if area > max_area:
+                if not DEBUG:
+                    break
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            self.bot_detected = True
+            if DEBUG:
+                M = cv2.moments(stopContours[max_idx])
+                try:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    cv2.drawContours(crop, stopContours, max_idx, (0, 255, 0), 3)
+                    cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+                except:
+                    pass
+        else:
+            self.bot_detected = False
+
+        if DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+
 
     def detect_lane(self, msg):
         if msg is None:
@@ -738,7 +789,7 @@ class DriverNode(DTROS):
                 self.closest_at = closest.tag_id
                 return True
         return False
-    
+
     def cb_detect_apriltag(self, _):
         if self.image_msg is None:
             return False
@@ -814,9 +865,9 @@ class DriverNode(DTROS):
                     cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
 
                 if cy > int(crop_height * (2/3)):
-                    self.close_to_blue = True
+                    self.crosswalk_detected = True
                 else:
-                    self.close_to_blue = False
+                    self.crosswalk_detected = False
             except:
                 pass
 
