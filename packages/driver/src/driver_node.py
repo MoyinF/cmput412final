@@ -159,7 +159,7 @@ class DriverNode(DTROS):
         self.stop_threshold_area = 5000 # minimum area of red to stop at
 
         # Parking lot variables
-        self.near_stall_distance = 0.4 # metres
+        self.near_stall_distance = 0.5 # metres
         self.far_stall_distance = 0.2 # metres
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
@@ -304,15 +304,34 @@ class DriverNode(DTROS):
         last_time = rospy.get_time()
         
         while True:
-            x, y, z = self.detect_apriltag_by_id(apriltag)
+            x, y, z, theta = self.detect_apriltag_by_id(apriltag)
             
-            if direction == "FORWARD" and z <= distance and z != 0:
-                break
-            elif direction == "REVERSE" and z >= distance and z != 0:
-                break
-    
+            if x == 0:
+               self.twist.omega = 0
+               self.vel_pub.publish(self.twist)
+               
+               rate.sleep()
+               
+               continue
+            
+            p_error = 0
+            
+            if direction == "FORWARD":
+                if z <= distance:
+                    break
+                else:
+                    p_error = x * 1000
+                    self.twist.v = self.velocity
+                
+            elif direction == "REVERSE":
+                if z >= distance:
+                    break
+                else:
+                    x = np.sin(theta) * distance - x
+                    p_error = x * 200
+                    self.twist.v = -self.velocity
+                
             # P Term
-            p_error = x * 1000
             P = -p_error * self.P
 
             # D Term
@@ -321,13 +340,7 @@ class DriverNode(DTROS):
             last_time = rospy.get_time()
             D = d_error * self.D
 
-            if direction == "FORWARD":
-                self.twist.v = self.velocity
-            else:
-                self.twist.v = -self.velocity
-                
             self.twist.omega = P + D
-
             self.vel_pub.publish(self.twist)
             
             rate.sleep()
@@ -436,9 +449,6 @@ class DriverNode(DTROS):
             target_distance = self.near_stall_distance
 
         self.apriltag_follow(227, "FORWARD", target_distance)
-        # self.pub_straight()
-        # while self.detect_apriltag_by_id(227)[2] > target_distance:
-        #     continue
 
         # turn the vehicle such that it faces away from the target stall
         at_opposite = None
@@ -465,35 +475,37 @@ class DriverNode(DTROS):
         self.apriltag_follow(at_opposite, "FORWARD", 0.5)
 
         # reverse into parking stall
-        self.apriltag_follow(at_opposite, "REVERSE", self.opposite_at_distance)
-        # self.reverse_to_stall(at_opposite)
-
-    def reverse_to_stall(self, at_opposite):
-        self.twist.v = -self.velocity
-        self.twist.omega = -self.calibration
-
-        while self.detect_apriltag_by_id(at_opposite)[2] < self.opposite_at_distance:
-            self.vel_pub.publish(self.twist)
-
-        self.stop()
-
+        self.apriltag_follow(at_opposite, "REVERSE", 1.5)
+    
     def face_apriltag(self, turn_direction, apriltag):
         """
         Turn until apriltag is in center of image
         """
         self.loginfo(f"Turning to face apriltag {apriltag}")
+        
+        rate = rospy.Rate(2)
 
         self.twist.v = 0
         if turn_direction == self.clockwise:
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
+            
             while self.detect_apriltag_by_id(apriltag)[0] >= 0:
-                continue
+                self.twist.omega = -5
+                self.vel_pub.publish(self.twist)
+                
+                rate.sleep()
+                
+                self.twist.omega = 0
+                self.vel_pub.publish(self.twist)
+                
         else:
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
             while self.detect_apriltag_by_id(apriltag)[0] <= 0:
-                continue
+                self.twist.omega = 5
+                self.vel_pub.publish(self.twist)
+                
+                rate.sleep()
+                
+                self.twist.omega = 0
+                self.vel_pub.publish(self.twist)
 
     def detect_bot(self, msg):
         pass
@@ -542,17 +554,17 @@ class DriverNode(DTROS):
             self.pub_mask.publish(rect_img_msg)
 
     def detect_apriltag_by_id(self, apriltag):
-        # Reutrns the x, y, z coordinate of a specific apriltag
+        # Reutrns the x, y, z coordinate of a specific apriltag in metres, and its pitch in radians
         img_msg = self.image_msg
         if not img_msg:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         cv_image = None
         try:
             cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
         except CvBridgeError as e:
             self.log(e)
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         # undistort the image
         newcameramtx, _ = cv2.getOptimalNewCameraMatrix(
@@ -567,7 +579,7 @@ class DriverNode(DTROS):
             image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
 
         if len(tags) == 0:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         for tag in tags:
             if tag.tag_id == apriltag:
@@ -578,10 +590,10 @@ class DriverNode(DTROS):
                         cv2.line(image_np, point_x, point_y, (0, 255, 0), 5)
                     rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(image_np))
                     self.pub_mask.publish(rect_img_msg)
-            
-                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0])
+                theta = np.arctan2(-tag.pose_R[2][0], np.sqrt(tag.pose_R[2][1]**2 + tag.pose_R[2][2]**2))
+                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0], theta)
 
-        return (0, 0, 0)
+        return (0, 0, 0, 0)
 
 
     def detect_intersection(self):
