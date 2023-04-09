@@ -4,7 +4,7 @@ import rospy
 
 from duckietown.dtros import DTROS, NodeType
 from sensor_msgs.msg import CameraInfo, CompressedImage
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, Header, ColorRGBA
 from turbojpeg import TurboJPEG
 import cv2
 from cv_bridge import CvBridge, CvBridgeError
@@ -18,11 +18,12 @@ import yaml
 YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for yellow mask
 BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
 ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
-STOP_MASK = [(0, 75, 150), (5, 150, 255)] # for stop lines
+STOP_MASK1 = [(0, 75, 150), (5, 150, 255)] # for stop lines
+STOP_MASK2 = [(175, 75, 150), (179, 150, 255)] # for stop lines
+ROBOT_MASK = [(100, 90, 60), (140, 190, 130)]
 
 DEBUG = False
 ENGLISH = False
-SYNCHRONOUS = True
 AT_SYNCHRONOUS = False
 CALLBACK_PROCESSING = True
 
@@ -37,13 +38,12 @@ class DriverNode(DTROS):
         self.stall = None # TODO: Get stall number as launch parameter
 
         # Subscribers
-        self.sub_camera = rospy.Subscriber("/" + self.veh + "/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
+        self.sub_camera = rospy.Subscriber(f"/{self.veh}/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
 
         # Publishers
-        self.vel_pub = rospy.Publisher("/" + self.veh + "/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
-        self.pub_wheel_commands = rospy.Publisher(f'/{self.veh}/wheels_driver_node/wheels_cmd', WheelsCmdStamped, queue_size=1)
-        self.pub_mask = rospy.Publisher("/" + self.veh + "/output/image/mask/compressed", CompressedImage, queue_size=1)
-        self.pub_img_bool = DEBUG
+        self.vel_pub = rospy.Publisher(f"/{self.veh}/car_cmd_switch_node/cmd", Twist2DStamped, queue_size=1)
+        self.pub_mask = rospy.Publisher(f"/{self.veh}/output/image/mask/compressed", CompressedImage, queue_size=1)
+        self.led_publisher = rospy.Publisher(f"/{self.veh}/led_emitter_node/led_pattern", LEDPattern, queue_size=1)
 
         # image processing tools
         self.image_msg = None
@@ -104,6 +104,12 @@ class DriverNode(DTROS):
         self.at_detected = False
         self.closest_at = None
 
+        # Initialize LED color-changing
+        self.pattern = LEDPattern()
+        self.pattern.header = Header()
+        for _ in range(5):
+            self.set_LEDs(True)
+
         # apriltag detection filters
         self.decision_threshold = 10
         self.z_threshold = 0.55
@@ -126,24 +132,17 @@ class DriverNode(DTROS):
         if self.veh == "csc22907":
             self.P = 0.020
             self.D = -0.007
-            # self.offset = 180
-            self.calibration = -0.2
-
-        self.camera_center = 340
-        self.leader_x = self.camera_center
-        self.straight_threshold = 75
-
-        # Service proxies
-        #rospy.wait_for_service(
-        #    f'/{self.veh}/led_emitter_node/set_custom_pattern')
-        #self.led_service = rospy.ServiceProxy(
-        #    f'/{self.veh}/led_emitter_node/set_custom_pattern', SetCustomLEDPattern, persistent=True)
+            self.offset = 180
+            if ENGLISH:
+                self.offset = -180
+            self.calibration = -0.20
+            self.turn_speed = 0.35
 
         self.stage = 1
 
         # Turning variables
-        self.left_turn_duration = 1.6
-        self.right_turn_duration = 1
+        self.left_turn_duration = 1.25
+        self.right_turn_duration = 0.5
         self.turn_in_place_duration = 1
         self.straight_duration = 2
         self.started_action = None
@@ -156,7 +155,7 @@ class DriverNode(DTROS):
         self.last_stop_time = None # last time we stopped
         self.stop_cooldown = 3 # how long should we wait after detecting a stop sign to detect another
         self.stop_duration = 3 # how long to stop for
-        self.stop_threshold_area = 4000 # minimum area of red to stop at
+        self.stop_threshold_area = 3700 # minimum area of red to stop at
 
         # Parking lot variables
         self.near_stall_distance = 0.4 # metres
@@ -164,11 +163,6 @@ class DriverNode(DTROS):
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
         self.opposite_at_distance = 1.5 # metres
-
-        # Image processing detection timer
-        if not SYNCHRONOUS:
-            self.image_processing_hz = 8
-            self.timer = rospy.Timer(rospy.Duration(1 / self.image_processing_hz), self.cb_image_processing)
 
         # Apriltag detection timer
         if not AT_SYNCHRONOUS:
@@ -230,7 +224,9 @@ class DriverNode(DTROS):
             # Mask for stop lines
             crop = img[400:-1, :, :]
             hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+            stopMask1 = cv2.inRange(hsv, STOP_MASK1[0], STOP_MASK1[1])
+            stopMask2 = cv2.inRange(hsv, STOP_MASK2[0], STOP_MASK2[1])
+            stopMask = cv2.bitwise_or(stopMask2, stopMask1)
             stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
             max_area = self.stop_threshold_area
@@ -285,13 +281,6 @@ class DriverNode(DTROS):
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(pub_img))
             self.pub_mask.publish(rect_img_msg)
 
-    def cb_image_processing(self, _):
-        self.detect_lane(self.image_msg)
-        if self.stage in [1, 3]:
-            self.detect_intersection()
-        if self.stage == 2:
-            self.detect_blue_line()
-
     def run(self):
         self.stage1()
         self.stage2()
@@ -332,7 +321,6 @@ class DriverNode(DTROS):
         # keep in mind that this keeps checking for april tags
         rate = rospy.Rate(4)
         while not self.at_detected:
-            # if SYNCHRONOUS:
             if not CALLBACK_PROCESSING:
                 self.detect_lane(self.image_msg)
             self.lane_follow()
@@ -348,21 +336,18 @@ class DriverNode(DTROS):
                 self.detect_intersection()
             if self.intersection_detected:
                 break
-            # if SYNCHRONOUS:
             if not CALLBACK_PROCESSING:
                 self.detect_lane(self.image_msg)
             self.lane_follow()
             rate.sleep()
 
         self.stop()
-        # self.pass_time(self.stop_duration)
 
     def drive_to_blue_line(self):
         # like drive_to_intersection but stop farther away to avoid duck murder
         rate = rospy.Rate(8)
         self.crosswalk_detected = False
         while not self.crosswalk_detected:
-            # if SYNCHRONOUS:
             if not CALLBACK_PROCESSING:
                 self.detect_lane(self.image_msg)
                 self.detect_blue_line(self.image_msg)
@@ -379,6 +364,7 @@ class DriverNode(DTROS):
     def lane_follow(self):
         if self.proportional is None:
             self.twist.omega = 0
+            self.twist.v = 0.1
         else:
             # P Term
             P = -self.proportional * self.P
@@ -413,33 +399,31 @@ class DriverNode(DTROS):
         self.intersection_detected = False
 
     def right_turn(self):
-        # TODO: test
         """
         Publish right-angle right turn
         """
         # self.set_lights("right")
         self.loginfo("Turning right")
         twist = Twist2DStamped()
-        twist.v = self.velocity
-        twist.omega = -2.5
+        twist.v = self.turn_speed
+        twist.omega = -2.25
         start_time = rospy.get_time()
-        rate = rospy.Rate(8)
+        rate = rospy.Rate(4)
         while rospy.get_time() - start_time < self.right_turn_duration:
             self.vel_pub.publish(twist)
             rate.sleep()
 
     def left_turn(self):
-        # TODO: test
         """
         Publish right-angle left turn
         """
         # self.set_lights("left")
         self.loginfo("Turning left")
         twist = Twist2DStamped()
-        twist.v = self.velocity
-        twist.omega = 2
+        twist.v = self.turn_speed
+        twist.omega = 1.75
         start_time = rospy.get_time()
-        rate = rospy.Rate(8)
+        rate = rospy.Rate(4)
         while rospy.get_time() - start_time < self.left_turn_duration:
             self.vel_pub.publish(twist)
             rate.sleep()
@@ -453,7 +437,7 @@ class DriverNode(DTROS):
     def straight(self, linear=None):
         # TODO: needs fixing, shouldn't be skewed. Get to move straight. Maybe add wheel calibration.
         twist = Twist2DStamped()
-        twist.v = self.velocity
+        twist.v = self.turn_speed
         if linear is not None:
             twist.omega = linear
         else:
@@ -461,7 +445,7 @@ class DriverNode(DTROS):
 
         self.loginfo("Going straight")
         start_time = rospy.get_time()
-        rate = rospy.Rate(8)
+        rate = rospy.Rate(4)
         while rospy.get_time() - start_time < self.straight_duration:
             self.vel_pub.publish(twist)
             rate.sleep()
@@ -472,33 +456,36 @@ class DriverNode(DTROS):
             continue
 
     def check_for_bot(self):
-        rate = rospy.Rate(4)
-        self.close_to_blue = False
-        while not self.close_to_blue:
-            self.detect_bot(self.image_msg)
-            if self.close_to_blue:
-                break
-            # if SYNCHRONOUS:
+        rate = rospy.Rate(8)
+        while not self.detect_bot():
             if not CALLBACK_PROCESSING:
-                self.detect_lane(self.image_msg)
+                self.detect_lane()
             self.lane_follow()
             rate.sleep()
-        # TODO: stop at a suitable distance so we have time to switch lanes
         self.stop()
 
     def switch_lanes(self):
-        # TODO: Probably switch to English driver. Keep moving till (?). Then switch back.
-        pass
+        # Switch lanes
+        self.offset = -self.offset
+
+        rate = rospy.Rate(8)
+        start_time = rospy.get_time()
+        switch_duration = 3
+        while rospy.get_time() - start_time < switch_duration:
+            if not CALLBACK_PROCESSING:
+                self.detect_lane()
+            self.lane_follow()
+            rate.sleep()
+
+        # Switch lanes back
+        self.offset = -self.offset
 
     def avoid_ducks(self):
         self.stop() # just to make sure
-        ducks_present = self.check_for_ducks()
-        if ducks_present:
-            while self.check_for_ducks():
-                self.pass_time(1)
-            self.pass_time(5)
-        else:
-            self.pass_time(5)
+        rate = rospy.Rate(1)
+        while self.check_for_ducks():
+            rate.sleep()
+        self.pass_time(5)
 
     def park(self, stall):
         # advance into parking lot until perpendicular to desired stall
@@ -566,9 +553,6 @@ class DriverNode(DTROS):
             self.vel_pub.publish(self.twist)
             while self.detect_apriltag_by_id(apriltag)[0] <= 0:
                 continue
-
-    def detect_bot(self, msg):
-        pass
 
     def detect_lane(self, msg):
         if msg is None:
@@ -659,7 +643,9 @@ class DriverNode(DTROS):
         img = self.jpeg.decode(msg.data)
         crop = img[400:-1, :, :]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        stopMask = cv2.inRange(hsv, STOP_MASK[0], STOP_MASK[1])
+        stopMask1 = cv2.inRange(hsv, STOP_MASK1[0], STOP_MASK1[1])
+        stopMask2 = cv2.inRange(hsv, STOP_MASK2[0], STOP_MASK2[1])
+        stopMask = cv2.bitwise_or(stopMask2, stopMask1)
         stopContours, _ = cv2.findContours(stopMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
         # Search for lane in front
@@ -823,6 +809,55 @@ class DriverNode(DTROS):
                 format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
+    def detect_bot(self):
+        msg = self.image_msg
+        if not msg:
+            return
+
+        found_robot = False
+
+        img = self.jpeg.decode(msg.data)
+        crop = img[0:350, :, :]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        robot_mask = cv2.inRange(hsv, ROBOT_MASK[0], ROBOT_MASK[1])
+        if DEBUG:
+            crop = cv2.bitwise_and(crop, crop, mask=robot_mask)
+
+        contours, _ = cv2.findContours(robot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for robot
+        max_area = 20
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                # if not DEBUG:
+                #     break
+                max_idx = i
+                max_area = area
+
+        print(max_area)
+
+        if max_idx != -1:
+            found_robot = True
+            if DEBUG:
+                M = cv2.moments(contours[max_idx])
+                try:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    if DEBUG:
+                        cv2.drawContours(crop, contours, max_idx, (0, 255, 0), 3)
+                        cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
+                except:
+                    pass
+
+                rect_img_msg = CompressedImage(
+                format="jpeg", data=self.jpeg.encode(crop))
+                self.pub_mask.publish(rect_img_msg)
+
+        return found_robot
+
     def check_for_ducks(self):
         msg = self.image_msg
         if not msg:
@@ -879,55 +914,38 @@ class DriverNode(DTROS):
 
         return found_ducks
 
-    def right_turn_(self):
-        # outdated
-        self.twist.v = 0
-        self.twist.omega = -12
-        self.vel_pub.publish(self.twist)
-        start_time = rospy.get_time()
-        while rospy.get_time() < start_time + 0.6:
-            continue
+    def set_LEDs(self, on = True):
+        '''
+        Code for this function was inspired by 
+        "duckietown/dt-core", file "led_emitter_node.py"
+        Link: https://github.com/duckietown/dt-core/blob/daffy/packages/led_emitter/src/led_emitter_node.py
+        Author: GitHub user liampaull
+        '''
+        self.pattern.header.stamp = rospy.Time.now()
+        rgba = ColorRGBA()
 
-    def left_turn_(self):
-        # outdated
-        self.twist.v = 0
-        self.twist.omega = 12
-        self.vel_pub.publish(self.twist)
-        start_time = rospy.get_time()
-        while rospy.get_time() < start_time + 0.6:
-            continue
+        if on:
+            value = 1.0
+        else:
+            value = 0.0
 
-    def set_lights(self, state):
-        msg = LEDPattern()
-        if state == "left":
-            msg.color_list = ['yellow','yellow','switchedoff','switchedoff','switchedoff']
-            msg.color_mask = [0, 0, 0, 0, 0]
-            msg.frequency = 2
-            msg.frequency_mask = [1, 1, 0, 0, 0]
-        elif state == "right":
-            msg.color_list = ['switchedoff','switchedoff','yellow','yellow','switchedoff']
-            msg.color_mask = [0, 0, 0, 0, 0]
-            msg.frequency = 2
-            msg.frequency_mask = [0, 0, 1, 1, 0]
-        elif state == "stop":
-            msg.color_list = ['switchedoff','red','switchedoff','red','switchedoff']
-            msg.color_mask = [0, 0, 0, 0, 0]
-            msg.frequency = 0
-            msg.frequency_mask = [0, 0, 0, 0, 0]
-        elif state == "off":
-            msg.color_list = ['switchedoff','switchedoff','switchedoff','switchedoff','switchedoff']
-            msg.color_mask = [0, 0, 0, 0, 0]
-            msg.frequency = 0
-            msg.frequency_mask = [0, 0, 0, 0, 0]
-        # self.led_service(msg)
+        # All white
+        rgba.r = value
+        rgba.g = value
+        rgba.b = value
+        rgba.a = value
+
+        self.pattern.rgb_vals = [rgba] * 5
+        self.led_publisher.publish(self.pattern)
 
     def hook(self):
         print("SHUTTING DOWN")
         self.twist.v = 0
         self.twist.omega = 0
         self.vel_pub.publish(self.twist)
-        for i in range(8):
+        for _ in range(8):
             self.vel_pub.publish(self.twist)
+            self.set_LEDs(False)
 
     def readYamlFile(self, fname):
         with open(fname, 'r') as in_file:
