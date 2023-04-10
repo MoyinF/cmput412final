@@ -13,8 +13,14 @@ dt-launchfile-init
 # NOTE: Use `dt-exec COMMAND` to run the main process (blocking process)
 
 # launching app
+<<<<<<< HEAD
 # dt-exec roslaunch led_emitter led_emitter_node.launch veh:="$VEHICLE_NAME"
 dt-exec roslaunch driver driver_node.launch veh:="$VEHICLE_NAME" stall:="1"
+=======
+dt-exec roslaunch driver driver_node.launch veh:="$VEHICLE_NAME"
+# dt-exec roslaunch duckiebot_detection duckiebot_detection_node.launch
+
+>>>>>>> 24488f2 (Adjust params and clean up files)
 # ----------------------------------------------------------------------------
 # YOUR CODE ABOVE THIS LINE
 
