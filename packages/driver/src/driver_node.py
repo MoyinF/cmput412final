@@ -65,7 +65,7 @@ class DriverNode(DTROS):
             node_name=node_name, node_type=NodeType.GENERIC)
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
-        self.stall = None # TODO: Get stall number as launch parameter
+        self.stall = 1 # TODO: Get stall number as launch parameter
 
         # Subscribers
         self.sub_camera = rospy.Subscriber(f"/{self.veh}/camera_node/image/compressed", CompressedImage, self.img_callback, queue_size=1, buff_size="20MB")
@@ -172,8 +172,6 @@ class DriverNode(DTROS):
             self.calibration = -0.10
             self.turn_speed = 0.35
 
-        self.stage = 1
-
         # Turning variables
         self.left_turn_duration = 1.25
         self.right_turn_duration = 0.5
@@ -205,7 +203,7 @@ class DriverNode(DTROS):
 
 
         # Parking lot variables
-        self.near_stall_distance = 0.4 # metres
+        self.near_stall_distance = 0.5 # metres
         self.far_stall_distance = 0.2 # metres
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
@@ -216,6 +214,7 @@ class DriverNode(DTROS):
             self.apriltag_hz = 3
             self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.cb_detect_apriltag)
 
+        self.stage = 1
         self.loginfo("Initialized")
 
         # Shutdown hook
