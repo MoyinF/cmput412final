@@ -20,13 +20,13 @@ BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
 ORANGE_MASK = [(0, 100, 50), (20, 255, 255)]  # for orange mask
 STOP_MASK1 = [(0, 75, 150), (5, 150, 255)] # for stop lines
 STOP_MASK2 = [(175, 75, 150), (179, 150, 255)] # for stop lines
-ROBOT_MASK = [(100, 90, 60), (140, 190, 130)]
+ROBOT_MASK = [(100, 90, 60), (140, 190, 130)] # bot detection
 
 # debugging flags
 DEBUG = False # this is only used for the image publishing.
 AT_DEBUG = True # this is only used for april tag detections
 LINES_DEBUG = False # check if red and blue lines were detected
-DUCK_DEBUG = True # duck detections
+DUCK_DEBUG = False # duck detections
 BOT_DEBUG = True # bot detections
 
 # flags that affect behavior
@@ -40,23 +40,9 @@ CALLBACK_PROCESSING = True
 
 # TODO:
 # get stall num from command line
+# change so it stops a bit closer to the blue line
+# or increase the size of the crop, problem is it might see far ducks and stop.
 # Maybe: implement correct
-
-# Things I noticed in the first run:
-# 2. At the first intersection, moved a bit to the right as it was trying to move straight. - adjust calibration
-# 3. Stopped correctly at most intersections, but at the third one still drives past the red line
-# 4. Missed the blue line mostly. At the first blue line, stopped for a while but kept moving even with ducks present.
-
-
-# Things I noticed in the second run:
-# 1. Stopped correctly at the first intersection but still missed the first april tag.
-#       So it kept lane following, i.e. turned right even though the April tag said to drive straight.
-# But it got the rest of the april tags (2nd and 3rd) right. (and stopped at the intersections)
-# 2. It stopped at the 1st blue line then kept moving.
-# 3. Then I moved it back and tried again and this time it stopped at the blue line completely, not moving at all. (Correct behavior)
-# Then I moved it back and tried again and this time it did not stop at all, just kept moving past the blue line.
-# This again is an outcome of the behaviour I coded, it had already detected the blue line and was now waiting for the bot.
-
 
 class DriverNode(DTROS):
 
@@ -158,8 +144,8 @@ class DriverNode(DTROS):
         self.D = -0.007
         self.last_error = 0
         self.last_time = rospy.get_time()
-
         self.calibration = 0
+
         if self.veh == "csc22906":
             self.calibration = 0.5
 
@@ -195,7 +181,7 @@ class DriverNode(DTROS):
         self.circlepattern_dims = [7, 3]
         #Parameters for the blob detector, passed to `SimpleBlobDetector <https://docs.opencv.org/4.3.0/d0/d7a/classcv_1_1SimpleBlobDetector.html>`_
         self.blobdetector_min_area = 10
-        self.blobdetector_min_dist_between_blobs = 2
+        self.blobdetector_min_dist_between_blobs = 3 # changed from 2 to 3 so closer
         params = cv2.SimpleBlobDetector_Params()
         params.minArea = self.blobdetector_min_area
         params.minDistBetweenBlobs = self.blobdetector_min_dist_between_blobs
@@ -321,8 +307,9 @@ class DriverNode(DTROS):
                         cv2.circle(pub_img, (cx, cy), 7, (0, 0, 255), -1)
                     except:
                         pass
+
             # DETECT BOT
-            self.bot_detected = False
+            image_cv = self.bridge.compressed_imgmsg_to_cv2(msg, "bgr8")
             (detection, centers) = cv2.findCirclesGrid(
                 image_cv,
                 patternSize=tuple(self.circlepattern_dims),
@@ -333,6 +320,8 @@ class DriverNode(DTROS):
                 self.bot_detected = True
                 if BOT_DEBUG:
                     rospy.loginfo("Bot detected")
+            else:
+                self.bot_detected = False
 
         # debugging
         if DEBUG:
@@ -359,25 +348,24 @@ class DriverNode(DTROS):
         self.stage = 2
 
     def stage2(self):
+        original_vel = self.velocity
+        self.velocity = 0.20
+
         rate = rospy.Rate(8)
         while not rospy.is_shutdown() and self.closest_at != 38:
+            if self.crosswalk_detected:
+                self.avoid_ducks()
             if self.bot_detected:
                 self.switch_lanes()
-            elif self.crosswalk_detected:
-                self.avoid_ducks()
-            else:
-                self.lane_follow()
-                rate.sleep()
+            self.lane_follow()
+            rate.sleep()
 
-        self.loginfo("Finished stage 2! ")
         self.stage = 3
+        self.velocity = original_vel
+        self.loginfo("Finished stage 2! ")
 
     def stage3(self):
-        # approach entance of parking lot and stop
         self.drive_to_intersection()
-        # park the vehicle
-        if self.closest_at != 227:
-            rospy.loginfo("WARNING: Detecting wrong apriltag for stage 3.")
         self.park(self.stall)
 
     def sprint(self):
@@ -386,24 +374,21 @@ class DriverNode(DTROS):
         while not self.at_detected:
             if not CALLBACK_PROCESSING:
                 self.detect_lane(self.image_msg)
-            self.lane_follow()
             if AT_SYNCHRONOUS:
                 self.at_detected = self.detect_apriltag()
+            self.lane_follow()
             rate.sleep()
 
     def drive_to_intersection(self): # and stop
         # new intersection behaviour defined
         rate = rospy.Rate(8)
         while not self.intersection_detected:
-            if not CALLBACK_PROCESSING:
-                self.detect_intersection()
-            if self.intersection_detected:
-                break
-            if not CALLBACK_PROCESSING:
-                self.detect_lane(self.image_msg)
             self.lane_follow()
             rate.sleep()
-
+            # if not CALLBACK_PROCESSING:
+                # self.detect_lane(self.image_msg)
+            # if not CALLBACK_PROCESSING:
+                # self.detect_intersection()
         self.stop()
 
     def drive_to_blue_line(self):
@@ -411,9 +396,9 @@ class DriverNode(DTROS):
         rate = rospy.Rate(8)
         self.crosswalk_detected = False
         while not self.crosswalk_detected:
-            if not CALLBACK_PROCESSING:
-                self.detect_lane(self.image_msg)
-                self.detect_blue_line(self.image_msg)
+            # if not CALLBACK_PROCESSING:
+                # self.detect_lane(self.image_msg)
+                # self.detect_blue_line(self.image_msg)
             self.lane_follow()
             rate.sleep()
         self.stop()
@@ -427,7 +412,7 @@ class DriverNode(DTROS):
     def lane_follow(self):
         if self.proportional is None:
             self.twist.omega = 0
-            self.twist.v = 0.1
+            self.twist.v = 0.1 # Why?
         else:
             # P Term
             P = -self.proportional * self.P
@@ -520,6 +505,24 @@ class DriverNode(DTROS):
         while rospy.get_time() < start_time + t:
             continue
 
+    def avoid_ducks(self):
+        self.stop() # just to make sure
+        rate = rospy.Rate(0.5)
+        while self.check_for_ducks():
+            self.stop()
+            rate.sleep()
+        self.pass_time(5) # wait a bit longer after ducks have moved
+
+        # move when ducks have left.
+        # helps avoid crosswalk re-detection
+        start_time = rospy.get_time()
+        t = 3
+        rate = rospy.Rate(8)
+        while rospy.get_time() < start_time + t:
+            self.lane_follow()
+            rate.sleep()
+
+
     def check_for_bot(self):
         rate = rospy.Rate(8)
         while not self.detect_bot():
@@ -530,9 +533,27 @@ class DriverNode(DTROS):
         self.stop()
 
     def switch_lanes(self):
+        if BOT_DEBUG:
+            rospy.loginfo("Switching lanes")
+
+        # stop to see if robot needs help
+        self.stop()
+        self.pass_time(2)
+
         # Switch lanes
         self.offset = -self.offset
 
+        # sharp left turn
+        twist = Twist2DStamped()
+        twist.v = 0
+        twist.omega = 5
+        start_time = rospy.get_time()
+        rate = rospy.Rate(8)
+        while rospy.get_time() - start_time < 3:
+            self.vel_pub.publish(twist)
+            rate.sleep()
+
+        # English lane follow
         rate = rospy.Rate(8)
         start_time = rospy.get_time()
         switch_duration = 3
@@ -542,16 +563,61 @@ class DriverNode(DTROS):
             self.lane_follow()
             rate.sleep()
 
+        self.stop()
         # Switch lanes back
         self.offset = -self.offset
+        self.bot_detected = False
+        if BOT_DEBUG:
+            rospy.loginfo("Done switching lanes")
 
-    def avoid_ducks(self):
-        self.stop() # just to make sure
-        rate = rospy.Rate(1)
-        while self.check_for_ducks():
-            self.stop()
+    def apriltag_follow(self, apriltag, direction, distance):
+        rate = rospy.Rate(8)
+        last_error = 0
+        last_time = rospy.get_time()
+
+        while True:
+            x, y, z, theta = self.detect_apriltag_by_id(apriltag)
+
+            if x == 0:
+               self.twist.omega = 0
+               self.vel_pub.publish(self.twist)
+
+               rate.sleep()
+
+               continue
+
+            p_error = 0
+
+            if direction == "FORWARD":
+                if z <= distance:
+                    break
+                else:
+                    p_error = x * 1000
+                    self.twist.v = self.velocity
+
+            elif direction == "REVERSE":
+                if z >= distance:
+                    break
+                else:
+                    x = np.sin(theta) * distance - x
+                    p_error = x * 200
+                    self.twist.v = -self.velocity
+
+            # P Term
+            P = -p_error * self.P
+
+            # D Term
+            d_error = (p_error - last_error) / (rospy.get_time() - last_time)
+            last_error = p_error
+            last_time = rospy.get_time()
+            D = d_error * self.D
+
+            self.twist.omega = P + D
+            self.vel_pub.publish(self.twist)
+
             rate.sleep()
-        self.pass_time(5)
+
+        self.stop()
 
     def park(self, stall):
         # advance into parking lot until perpendicular to desired stall
@@ -561,9 +627,7 @@ class DriverNode(DTROS):
         else:
             target_distance = self.near_stall_distance
 
-        self.straight()
-        while self.at_distance > target_distance:
-            continue
+        self.apriltag_follow(227, "FORWARD", target_distance)
 
         # turn the vehicle such that it faces away from the target stall
         at_opposite = None
@@ -584,14 +648,14 @@ class DriverNode(DTROS):
             at_opposite = 226 # stall 2
             turn_direction = self.counterclockwise
 
-        else:
-            rospy.loginfo("WARNING: Wrong input for parking stall number.")
-            rospy.loginfo("Automatically backing into stall 3.")
-
         self.face_apriltag(turn_direction, at_opposite)
 
+        # advance forward to opposite stall
+        self.apriltag_follow(at_opposite, "FORWARD", 0.5)
+
         # reverse into parking stall
-        self.reverse_to_stall(at_opposite)
+        self.apriltag_follow(at_opposite, "REVERSE", 1.5)
+
 
     def reverse_to_stall(self, at_opposite):
         self.twist.v = -self.velocity
@@ -608,20 +672,33 @@ class DriverNode(DTROS):
         """
         self.loginfo(f"Turning to face apriltag {apriltag}")
 
+        rate = rospy.Rate(2)
+
         self.twist.v = 0
         if turn_direction == self.clockwise:
-            self.twist.omega = -2.5
-            self.vel_pub.publish(self.twist)
+
             while self.detect_apriltag_by_id(apriltag)[0] >= 0:
-                continue
+                self.twist.omega = -5
+                self.vel_pub.publish(self.twist)
+
+                rate.sleep()
+
+                self.twist.omega = 0
+                self.vel_pub.publish(self.twist)
+
         else:
-            self.twist.omega = 2.5
-            self.vel_pub.publish(self.twist)
             while self.detect_apriltag_by_id(apriltag)[0] <= 0:
-                continue
+                self.twist.omega = 5
+                self.vel_pub.publish(self.twist)
+
+                rate.sleep()
+
+                self.twist.omega = 0
+                self.vel_pub.publish(self.twist)
 
     def detect_bot(self):
         self.bot_detected = False
+        image_cv = self.bridge.compressed_imgmsg_to_cv2(self.image_msg, "bgr8")
         (detection, centers) = cv2.findCirclesGrid(
             image_cv,
             patternSize=tuple(self.circlepattern_dims),
@@ -675,17 +752,17 @@ class DriverNode(DTROS):
             self.pub_mask.publish(rect_img_msg)
 
     def detect_apriltag_by_id(self, apriltag):
-        # Reutrns the x, y, z coordinate of a specific apriltag
+        # Reutrns the x, y, z coordinate of a specific apriltag in metres, and its pitch in radians
         img_msg = self.image_msg
         if not img_msg:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         cv_image = None
         try:
             cv_image = self.bridge.compressed_imgmsg_to_cv2(img_msg)
         except CvBridgeError as e:
             self.log(e)
-            return []
+            return (0, 0, 0, 0)
 
         # undistort the image
         newcameramtx, _ = cv2.getOptimalNewCameraMatrix(
@@ -700,13 +777,21 @@ class DriverNode(DTROS):
             image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
 
         if len(tags) == 0:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
 
         for tag in tags:
             if tag.tag_id == apriltag:
-                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0])
+                if DEBUG:
+                    for i in range(len(tag.corners)):
+                        point_x = tuple(tag.corners[i-1, :].astype(int))
+                        point_y = tuple(tag.corners[i, :].astype(int))
+                        cv2.line(image_np, point_x, point_y, (0, 255, 0), 5)
+                    rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(image_np))
+                    self.pub_mask.publish(rect_img_msg)
+                theta = np.arctan2(-tag.pose_R[2][0], np.sqrt(tag.pose_R[2][1]**2 + tag.pose_R[2][2]**2))
+                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0], theta)
 
-        return (0, 0, 0)
+        return (0, 0, 0, 0)
 
 
     def detect_intersection(self):
@@ -944,6 +1029,7 @@ class DriverNode(DTROS):
         found_ducks = False
 
         crop = self.jpeg.decode(msg.data)
+        crop = crop[240:-1, :, :]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
 
         yellow_mask = cv2.inRange(hsv, YELLOW_MASK[0], YELLOW_MASK[1])
@@ -1021,6 +1107,15 @@ class DriverNode(DTROS):
 
         self.pattern.rgb_vals = [rgba] * 5
         self.led_publisher.publish(self.pattern)
+
+    def stage2_(self):
+        self.drive_to_blue_line()
+        self.avoid_ducks()
+        self.check_for_bot()
+        self.switch_lanes()
+        self.drive_to_blue_line()
+        self.avoid_ducks()
+        self.lane_follow()
 
     def hook(self):
         print("SHUTTING DOWN")
