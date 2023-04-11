@@ -101,6 +101,14 @@ class DriverNode(DTROS):
                                     refine_edges=1,
                                     decode_sharpening=0.25,
                                     debug=0)
+        self.at_detector_2 = Detector(searchpath=['apriltags'],
+                                    families='tag36h11',
+                                    nthreads=1,
+                                    quad_decimate=1.0,
+                                    quad_sigma=0.0,
+                                    refine_edges=1,
+                                    decode_sharpening=0.25,
+                                    debug=0)
         self.at_distance = 0
         self.apriltags = {
             38: 'STOP',
@@ -132,7 +140,7 @@ class DriverNode(DTROS):
         self.offset = 170
         if ENGLISH:
             self.offset = -170
-        self.velocity = 0.25
+        self.velocity = 0.3
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
         self.turn_speed = 0.15
 
@@ -238,8 +246,6 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 1 :)")
 
     def stage2(self):
-        # original_vel = self.velocity
-        # self.velocity = 0.20
 
         rate = rospy.Rate(10) # increased from 8 to 10 to prevent jerky movements
         while not rospy.is_shutdown() and self.closest_at != 38:
@@ -252,14 +258,12 @@ class DriverNode(DTROS):
                 rate.sleep()
 
         self.stage = 3
-        # self.velocity = original_vel
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
         self.drive_to_intersection()
         self.intersection_sequence()
         rospy.loginfo("Parking in stall no. {}".format(str(self.stall)))
-        # self.twist.v = self.velocity # not sure if needed
         self.park(self.stall)
 
     def drive_to_intersection(self):
@@ -406,7 +410,7 @@ class DriverNode(DTROS):
         if SWITCH_LANE_DEBUG:
             rospy.loginfo("Moving close to see if it needs help")
         # keep moving till we're close to the bot
-        rate = rospy.Rate(14)
+        rate = rospy.Rate(14) # TODO: test with 8
         while not rospy.is_shutdown() and not self.detect_bot_contour() and self.bot_detected:
             self.lane_follow()
             rate.sleep()
@@ -484,8 +488,6 @@ class DriverNode(DTROS):
         if max_idx != -1:
             found_robot = True
 
-        if SWITCH_LANE_DEBUG and max_area > self.bot_threshold_area:
-            rospy.loginfo("MAX AREA = {}".format(max_area))
         return found_robot
 
     def apriltag_follow(self, apriltag, direction, distance):
@@ -508,7 +510,6 @@ class DriverNode(DTROS):
 
             if direction == "FORWARD":
                 if z <= distance:
-                    rospy.loginfo("apriltag_follow z <= distance")
                     break
                 else:
                     p_error = x * 1000
@@ -516,7 +517,6 @@ class DriverNode(DTROS):
 
             elif direction == "REVERSE":
                 if z >= distance:
-                    rospy.loginfo("apriltag_follow z >= distance")
                     break
                 else:
                     x = np.sin(theta) * distance - x
@@ -579,9 +579,10 @@ class DriverNode(DTROS):
     def reverse_to_stall(self, at_opposite):
         self.twist.v = -self.velocity
         self.twist.omega = -self.calibration
-
+        rate = rospy.Rate(8)
         while not rospy.is_shutdown() and self.detect_apriltag_by_id(at_opposite)[3] < self.opposite_at_distance:
             self.vel_pub.publish(self.twist)
+            rate.sleep()
 
         self.stop()
 
@@ -755,7 +756,7 @@ class DriverNode(DTROS):
         image_gray = cv2.cvtColor(image_np, cv2.COLOR_BGR2GRAY)
 
         # detect tags present in image
-        tags = self.at_detector.detect(
+        tags = self.at_detector_2.detect(
             image_gray, estimate_tag_pose=True, camera_params=self.camera_params, tag_size=0.065)
 
         if len(tags) == 0:
