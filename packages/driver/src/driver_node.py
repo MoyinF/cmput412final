@@ -762,22 +762,18 @@ class DriverNode(DTROS):
             return (0, 0, 0, 0)
 
         for tag in tags:
-            # ignore distant tags and tags with bad decoding
-            z = tag.pose_t[2][0]
-            if tag.decision_margin < self.decision_threshold or z > self.z_threshold:
-                continue
-
-            # update the closest-detected tag if needed
-            if z < closest_tag_z:
-                closest_tag_z = z
-                closest = tag
-
-        if closest:
-            if closest.tag_id in self.apriltags:
-                self.at_distance = closest.pose_t[2][0]
-                self.closest_at = closest.tag_id
-                return True
-        return False
+            if tag.tag_id == apriltag:
+                theta = np.arctan2(-tag.pose_R[2][0], np.sqrt(tag.pose_R[2][1]**2 + tag.pose_R[2][2]**2))
+                if DEBUG:
+                    for i in range(len(tag.corners)):
+                        point_x = tuple(tag.corners[i-1, :].astype(int))
+                        point_y = tuple(tag.corners[i, :].astype(int))
+                        cv2.line(image_np, point_x, point_y, (0, 255, 0), 5)
+                    rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(image_np))
+                    self.pub_mask.publish(rect_img_msg)
+                return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0], theta)
+        
+        return (0, 0, 0, 0)
 
     def cb_detect_apriltag(self, _):
         if self.image_msg is None:
