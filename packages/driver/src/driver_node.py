@@ -21,10 +21,11 @@ ROBOT_MASK = [(100, 90, 60), (140, 190, 130)] # bot detection
 
 # debugging flags
 DEBUG = False # this is only used for the image publishing.
-AT_DEBUG = True # this is only used for april tag detections
+AT_DEBUG = False # this is only used for april tag detections
 LINES_DEBUG = False # check if red and blue lines were detected
 DUCK_DEBUG = False # duck detections
-BOT_DEBUG = True # bot detections
+BOT_DEBUG = False # bot detections
+SWITCH_LANE_DEBUG = True
 
 # flags that affect behavior
 ENGLISH = False
@@ -178,6 +179,9 @@ class DriverNode(DTROS):
         params.minArea = 10
         params.minDistBetweenBlobs = 3 # changed from 2 to 3 so closer
         self.simple_blob_detector = cv2.SimpleBlobDetector_create(params)
+
+        self.bot_threshold_dist = 0.30
+        self.bot_threshold_area = 7500
 
         # Parking lot variables
         self.near_stall_distance = 0.5 # metres
@@ -348,7 +352,7 @@ class DriverNode(DTROS):
         self.twist.omega = 0
         self.vel_pub.publish(self.twist)
 
-    def straight(self, linear=None):
+    def straight(self, linear=None, duration=None):
         """
         Publish straight command
         """
@@ -362,7 +366,9 @@ class DriverNode(DTROS):
         self.loginfo("Going straight")
         start_time = rospy.get_time()
         rate = rospy.Rate(4)
-        while not rospy.is_shutdown() and rospy.get_time() - start_time < self.straight_duration:
+        if duration is None:
+            duration = self.straight_duration
+        while not rospy.is_shutdown() and rospy.get_time() - start_time < duration:
             self.vel_pub.publish(twist)
             rate.sleep()
 
@@ -384,34 +390,46 @@ class DriverNode(DTROS):
             rate.sleep()
         self.pass_time(5) # wait a bit longer after ducks have moved
 
-        self.straight()
+        self.straight(duration=1)
         self.crosswalk_detected = False
 
     def switch_lanes(self):
-        if BOT_DEBUG:
-            rospy.loginfo("Switching lanes")
+        original_vel = self.velocity
+        self.velocity = 0.3
+        if SWITCH_LANE_DEBUG:
+            rospy.loginfo("Moving close to see if it needs help")
+
+        # keep moving till we're close to the bot
+        rate = rospy.Rate(14)
+        while not rospy.is_shutdown() and not self.detect_bot_contour() and self.bot_detected:
+            self.lane_follow()
+            rate.sleep()
 
         # stop to see if robot needs help
         self.stop()
-        self.pass_time(2)
+        self.pass_time(5)
+        if SWITCH_LANE_DEBUG:
+            rospy.loginfo("Switching lanes")
 
         # Switch lanes
         self.offset = -self.offset
 
+        '''
         # sharp left turn
         twist = Twist2DStamped()
-        twist.v = 0.1
-        twist.omega = 2.5
+        twist.v = 0.2
+        twist.omega = 1.25
         start_time = rospy.get_time()
         rate = rospy.Rate(8)
-        while not rospy.is_shutdown() and rospy.get_time() - start_time < 3:
+        while not rospy.is_shutdown() and rospy.get_time() - start_time < 1.5:
             self.vel_pub.publish(twist)
             rate.sleep()
+        '''
 
         # English lane follow
         rate = rospy.Rate(8)
         start_time = rospy.get_time()
-        switch_duration = 3
+        switch_duration = 3.5
         while not rospy.is_shutdown() and rospy.get_time() - start_time < switch_duration:
             if not CALLBACK_PROCESSING:
                 self.detect_lane()
@@ -422,8 +440,62 @@ class DriverNode(DTROS):
         # Switch lanes back
         self.offset = -self.offset
         self.bot_detected = False
-        if BOT_DEBUG:
+        if SWITCH_LANE_DEBUG:
             rospy.loginfo("Done switching lanes")
+        self.velocity = original_vel
+
+    def detect_bot(self):
+        self.bot_detected = False
+        image_cv = self.bridge.compressed_imgmsg_to_cv2(self.image_msg, "bgr8")
+        (detection, centers) = cv2.findCirclesGrid(
+            image_cv,
+            patternSize=tuple(self.circlepattern_dims),
+            flags=cv2.CALIB_CB_SYMMETRIC_GRID,
+            blobDetector=self.simple_blob_detector,
+        )
+
+        if detection > 0:
+            self.bot_detected = True
+            if BOT_DEBUG:
+                rospy.loginfo("Bot detected")
+
+    def detect_bot_contour(self):
+        msg = self.image_msg
+        if not msg:
+            return
+
+        found_robot = False
+
+        img = self.jpeg.decode(msg.data)
+        crop = img[100:320, 200:500, :]
+        if SWITCH_LANE_DEBUG:
+            rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
+            self.pub_mask.publish(rect_img_msg)
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+
+        robot_mask = cv2.inRange(hsv, ROBOT_MASK[0], ROBOT_MASK[1])
+        if DEBUG:
+            crop = cv2.bitwise_and(crop, crop, mask=robot_mask)
+
+        contours, _ = cv2.findContours(robot_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+
+        # Search for robot
+        max_area = self.bot_threshold_area
+        max_idx = -1
+        for i in range(len(contours)):
+            area = cv2.contourArea(contours[i])
+            if area > max_area:
+                # if not DEBUG:
+                #     break
+                max_idx = i
+                max_area = area
+
+        if max_idx != -1:
+            found_robot = True
+
+        if SWITCH_LANE_DEBUG and max_area > 6000:
+            rospy.loginfo("MAX AREA = {}".format(max_area))
+        return found_robot
 
     def apriltag_follow(self, apriltag, direction, distance):
         rate = rospy.Rate(8)
@@ -667,21 +739,6 @@ class DriverNode(DTROS):
 
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
-
-    def detect_bot(self):
-        self.bot_detected = False
-        image_cv = self.bridge.compressed_imgmsg_to_cv2(self.image_msg, "bgr8")
-        (detection, centers) = cv2.findCirclesGrid(
-            image_cv,
-            patternSize=tuple(self.circlepattern_dims),
-            flags=cv2.CALIB_CB_SYMMETRIC_GRID,
-            blobDetector=self.simple_blob_detector,
-        )
-
-        if detection > 0:
-            self.bot_detected = True
-            if BOT_DEBUG:
-                rospy.loginfo("Bot detected")
 
     def detect_apriltag_by_id(self, apriltag):
         # Returns the x, y, z coordinate of a specific apriltag in metres, and its pitch in radians
