@@ -1,47 +1,49 @@
-# Template: template-ros
+# Exercise 5: ML for Robotics
 
-This template provides a boilerplate repository
-for developing ROS-based software in Duckietown.
+This repository contains implementation solutions for exercise 5. For information about the project, please read the report at:
 
-**NOTE:** If you want to develop software that does not use
-ROS, check out [this template](https://github.com/duckietown/template-basic).
+<!-- TODO: add URLs -->
 
+[Nadeen Mohamed's site]() or [Moyinoluwa Famobiw's site]() or [Austin Tralnberg's Site]()
 
-## How to use it
+## Structure
 
-### 1. Fork this repository
+There are two packages in this file: duckiebot_detection and driver. We will discuss the purpose of the python source files for each package (which are located inside the packages `src` folder).
 
-Use the fork button in the top-right corner of the github page to fork this template repository.
+### Driver
 
+<!-- TODO: add info about driver -->
 
-### 2. Create a new repository
+### Duckiebot Detection
 
-Create a new repository on github.com while
-specifying the newly forked template repository as
-a template for your new repository.
+<!-- TODO: add info about duckiebot detection -->
 
+## Execution:
 
-### 3. Define dependencies
+To set the stall parameter, change the number in `/data/stall`, for example with the following steps:
 
-List the dependencies in the files `dependencies-apt.txt` and
-`dependencies-py3.txt` (apt packages and pip packages respectively).
+```
+ssh duckie@csc229xx.local # where csc229xx is the duckiebot's hostname
+vim /data/stall # creates or opens the stall file, where you write the number of the stall and save
+```
 
+To run the program, ensure that the variable `$BOT` stores your robot's host name (ie. `csc229xx`), and run the following commands:
 
-### 4. Place your code
+```
+dts devel build -f -H $BOT.local
+dts devel run -H $BOT.local
+```
 
-Place your code in the directory `/packages/` of
-your new repository.
+To shutdown the program, enter `CTRL + C` in your terminal.
 
+## Credit:
 
-### 5. Setup launchers
+This code is built from the Duckiebot detections tarter code by Zepeng Xiao (https://github.com/XZPshaw/CMPUT412503_exercise4).
 
-The directory `/launchers` can contain as many launchers (launching scripts)
-as you want. A default launcher called `default.sh` must always be present.
+Build on top of by Nadeen Mohamed, Moyinoluwa Famobiwo, and Austin Tralnberg.
 
-If you create an executable script (i.e., a file with a valid shebang statement)
-a launcher will be created for it. For example, the script file 
-`/launchers/my-launcher.sh` will be available inside the Docker image as the binary
-`dt-launcher-my-launcher`.
+Autonomous lane following code was also borrowed from Justin Francis.
 
-When launching a new container, you can simply provide `dt-launcher-my-launcher` as
-command.
+Code was also borrowed (and cited in-code) from the following sources:
+
+<!-- TODO: add code sources -->
