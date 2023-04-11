@@ -249,17 +249,14 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
-        rate = rospy.Rate(8)
-        while not self.intersection_detected and not rospy.is_shutdown():
-            self.lane_follow()
-            rate.sleep()
+        self.drive_to_intersection()
         self.intersection_sequence()
         rospy.loginfo("Parking in stall no. {}".format(str(self.stall)))
-        self.twist.v = self.velocity # not sure if needed 
+        # self.twist.v = self.velocity # not sure if needed
         self.park(self.stall)
 
-    def drive_to_intersection(self): # and stop
-        # TODO: delete, not needed anymore
+    def drive_to_intersection(self):
+        # and stop
         rate = rospy.Rate(8)
         while not rospy.is_shutdown() and not self.intersection_detected:
             self.lane_follow()
