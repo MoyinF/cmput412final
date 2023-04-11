@@ -160,7 +160,7 @@ class DriverNode(DTROS):
 
         # Crosswalk variables
         self.crosswalk_detected = False
-        self.crosswalk_threshold_area = 4000 # minimum area of blue to detect
+        self.crosswalk_threshold_area = 20000 # minimum area of blue to detect
 
         # Stop variables
         self.last_stop_time = None # last time we stopped
@@ -220,7 +220,7 @@ class DriverNode(DTROS):
 
     def stage1(self):
         rate = rospy.Rate(8)  # 8hz
-        while not rospy.is_shutdown() and self.closest_at != 163:
+        while not rospy.is_shutdown() and self.closest_at not in [163, 38]:
             if self.intersection_detected:
                 self.intersection_sequence()
             else:
@@ -234,25 +234,32 @@ class DriverNode(DTROS):
         original_vel = self.velocity
         self.velocity = 0.20
 
-        rate = rospy.Rate(8)
+        rate = rospy.Rate(10) # increased from 8 to 10 to prevent jerky movements
         while not rospy.is_shutdown() and self.closest_at != 38:
-            if self.crosswalk_detected:
-                self.avoid_ducks()
             if self.bot_detected:
                 self.switch_lanes()
-            self.lane_follow()
-            rate.sleep()
+            elif self.crosswalk_detected:
+                self.avoid_ducks()
+            else:
+                self.lane_follow()
+                rate.sleep()
 
         self.stage = 3
         self.velocity = original_vel
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
-        self.drive_to_intersection()
+        rate = rospy.Rate(8)
+        while not self.intersection_detected and not rospy.is_shutdown():
+            self.lane_follow()
+            rate.sleep()
+        self.intersection_sequence()
+        rospy.loginfo("Parking in stall no. {}".format(str(self.stall)))
+        self.twist.v = self.velocity # not sure if needed 
         self.park(self.stall)
 
     def drive_to_intersection(self): # and stop
-        # new intersection behaviour defined
+        # TODO: delete, not needed anymore
         rate = rospy.Rate(8)
         while not rospy.is_shutdown() and not self.intersection_detected:
             self.lane_follow()
@@ -297,6 +304,8 @@ class DriverNode(DTROS):
             self.left_turn()
         elif self.closest_at == 56:
             self.straight()
+        elif self.closest_at == 38:
+            pass
         elif self.closest_at == 163:
             self.avoid_ducks()
         else:
@@ -370,23 +379,15 @@ class DriverNode(DTROS):
 
     def avoid_ducks(self):
         self.stop() # just to make sure
-        rate = rospy.Rate(0.5)
-
+        rate = rospy.Rate(2)
+        self.check_for_ducks()
         # Stay still while ducks are still crossing
         while not rospy.is_shutdown() and self.check_for_ducks():
             self.stop()
             rate.sleep()
         self.pass_time(5) # wait a bit longer after ducks have moved
 
-        # Move when ducks have left
-        # helps avoid crosswalk re-detection
-        start_time = rospy.get_time()
-        wait_time = 3
-        rate = rospy.Rate(8)
-        while not rospy.is_shutdown() and rospy.get_time() < start_time + wait_time:
-            self.lane_follow()
-            rate.sleep()
-        
+        self.straight()
         self.crosswalk_detected = False
 
     def switch_lanes(self):
@@ -402,8 +403,8 @@ class DriverNode(DTROS):
 
         # sharp left turn
         twist = Twist2DStamped()
-        twist.v = 0
-        twist.omega = 5
+        twist.v = 0.1
+        twist.omega = 2.5
         start_time = rospy.get_time()
         rate = rospy.Rate(8)
         while not rospy.is_shutdown() and rospy.get_time() - start_time < 3:
@@ -590,7 +591,7 @@ class DriverNode(DTROS):
         if DEBUG:
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
-    
+
     def detect_intersection(self, img):
         # Don't detect if we recently detected an intersection
         if self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown:
@@ -617,7 +618,7 @@ class DriverNode(DTROS):
 
         if max_idx == -1:
             return
-        
+
         self.intersection_detected = True
 
         if DEBUG:
@@ -629,7 +630,7 @@ class DriverNode(DTROS):
                 cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
             except:
                 pass
-            
+
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
@@ -654,7 +655,7 @@ class DriverNode(DTROS):
 
         if max_idx == -1:
             return
-        
+
         self.crosswalk_detected = True
 
         if DEBUG:
@@ -666,7 +667,7 @@ class DriverNode(DTROS):
                 cv2.circle(crop, (cx, cy), 7, (0, 0, 255), -1)
             except:
                 pass
-            
+
             rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(crop))
             self.pub_mask.publish(rect_img_msg)
 
