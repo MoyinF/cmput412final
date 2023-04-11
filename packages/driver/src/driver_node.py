@@ -765,7 +765,6 @@ class DriverNode(DTROS):
         for tag in tags:
             if tag.tag_id == apriltag:
                 theta = np.arctan2(-tag.pose_R[2][0], np.sqrt(tag.pose_R[2][1]**2 + tag.pose_R[2][2]**2))
-
                 if DEBUG:
                     for i in range(len(tag.corners)):
                         point_x = tuple(tag.corners[i-1, :].astype(int))
@@ -774,7 +773,7 @@ class DriverNode(DTROS):
                     rect_img_msg = CompressedImage(format="jpeg", data=self.jpeg.encode(image_np))
                     self.pub_mask.publish(rect_img_msg)
                 return (tag.pose_t[0][0], tag.pose_t[1][0], tag.pose_t[2][0], theta)
-
+        
         return (0, 0, 0, 0)
 
     def cb_detect_apriltag(self, _):
@@ -871,7 +870,6 @@ class DriverNode(DTROS):
                                 cv2.drawContours(crop, [yellow_contour], -1, (0, 255, 0), 3)
                                 cv2.drawContours(crop, [orange_contour], -1, (0, 255, 0), 3)
                                 cv2.circle(crop, (cx1, cy1), 7, (0, 0, 255), -1)
-
                     except:
                         pass
 
