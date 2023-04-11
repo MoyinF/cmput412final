@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 
-import cv2
+import cv2, rospy, os
 
-import rospy
 from cv_bridge import CvBridge
-import os
 from duckietown.dtros import DTParam, DTROS, NodeType, ParamType
 from duckietown_msgs.msg import BoolStamped, VehicleCorners
 from geometry_msgs.msg import Point32
@@ -26,23 +24,20 @@ class DuckiebotDetectionNode(DTROS):
     """
 
     def __init__(self, node_name):
-
         # Initialize the DTROS parent class
         super(DuckiebotDetectionNode, self).__init__(node_name=node_name, node_type=NodeType.PERCEPTION)
         # Initialize the parameters
-        
         self.host = str(os.environ['VEHICLE_NAME'])
         
-        #Frequency at which to process the incoming images
+        # Frequency at which to process the incoming images
         self.process_frequency = 2
         
-        #Number of dots in the pattern, two elements: [number of columns, number of rows]
+        # Number of dots in the pattern, two elements: [number of columns, number of rows]
         self.circlepattern_dims = [7, 3]
         
-        #Parameters for the blob detector, passed to `SimpleBlobDetector <https://docs.opencv.org/4.3.0/d0/d7a/classcv_1_1SimpleBlobDetector.html>`_
+        # Parameters for the blob detector, passed to `SimpleBlobDetector <https://docs.opencv.org/4.3.0/d0/d7a/classcv_1_1SimpleBlobDetector.html>`_
         self.blobdetector_min_area = 10
         self.blobdetector_min_dist_between_blobs = 2
-
 
         self.cbParametersChanged() 
 
@@ -55,12 +50,9 @@ class DuckiebotDetectionNode(DTROS):
 
         # Publishers
         self.pub_centers = rospy.Publisher("/{}/duckiebot_detection_node/centers".format(self.host), VehicleCorners, queue_size=1)
-        self.pub_circlepattern_image = rospy.Publisher("/{}/duckiebot_detection_node/detection_image/compressed".format(self.host), CompressedImage, queue_size=1)
-        self.pub_detection = rospy.Publisher("/{}/duckiebot_detection_node/detection".format(self.host), BoolStamped, queue_size=1)
         self.log("Detection Initialization completed.")
 
     def cbParametersChanged(self):
-
         self.publish_duration = rospy.Duration.from_sec(1.0 / self.process_frequency)
         params = cv2.SimpleBlobDetector_Params()
         params.minArea = self.blobdetector_min_area
@@ -95,10 +87,7 @@ class DuckiebotDetectionNode(DTROS):
             blobDetector=self.simple_blob_detector,
         )
 
-        # if the pattern is detected, cv2.findCirclesGrid returns a non-zero result, otherwise it returns 0
-        # vehicle_detected_msg_out.data = detection > 0
-        # self.pub_detection.publish(vehicle_detected_msg_out)
-
+        # If the pattern is detected, cv2.findCirclesGrid returns a non-zero result, otherwise it returns 0
         vehicle_centers_msg_out.header = image_msg.header
         vehicle_centers_msg_out.detection.data = detection > 0
         detection_flag_msg_out.header = image_msg.header
@@ -119,12 +108,6 @@ class DuckiebotDetectionNode(DTROS):
             vehicle_centers_msg_out.W = self.circlepattern_dims[0]
 
         self.pub_centers.publish(vehicle_centers_msg_out)
-        self.pub_detection.publish(detection_flag_msg_out)
-        if self.pub_circlepattern_image.get_num_connections() > 0:
-            cv2.drawChessboardCorners(image_cv, tuple(self.circlepattern_dims), centers, detection)
-            image_msg_out = self.bridge.cv2_to_compressed_imgmsg(image_cv)
-            self.pub_circlepattern_image.publish(image_msg_out)
-
 
 if __name__ == "__main__":
     duckiebot_detection_node = DuckiebotDetectionNode("duckiebot_detection")

@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 
-import cv2
+import cv2, rospy, os
 import numpy as np
 
-import rospy
-import os
 from cv_bridge import CvBridge
-from duckietown.dtros import DTParam, DTROS, NodeType, ParamType
-from duckietown_msgs.msg import BoolStamped, VehicleCorners
-from duckietown_msgs.srv import ChangePattern
+from duckietown.dtros import DTROS, NodeType
+from duckietown_msgs.msg import VehicleCorners
 from image_geometry import PinholeCameraModel
 from sensor_msgs.msg import CameraInfo
-from std_msgs.msg import String, Float32
+from std_msgs.msg import Float32
 
 
 class DuckiebotDistanceNode(DTROS):
@@ -20,19 +17,16 @@ class DuckiebotDistanceNode(DTROS):
     """
 
     def __init__(self, node_name):
-    
-    	
         # Initialize the DTROS parent class
         super(DuckiebotDistanceNode, self).__init__(node_name=node_name, node_type=NodeType.PERCEPTION)
         self.host = str(os.environ['VEHICLE_NAME'])
 	
-	#Distance between the centers of the circles on the back
+	    # Distance between the centers of the circles on the back
         self.distance_between_centers = 0.0125
         
-        #Maximum tolerable reprojection error.
-        #If a reprojection error higher than that is observed. May require some actions
+        # Maximum tolerable reprojection error.
+        # If a reprojection error higher than that is observed. May require some actions
         self.max_reproj_pixelerror_pose_estimation = 1.5
-
 
         self.bridge = CvBridge()
 
@@ -43,28 +37,16 @@ class DuckiebotDistanceNode(DTROS):
         
         # subscribers
         self.sub_centers = rospy.Subscriber("/{}/duckiebot_detection_node/centers".format(self.host), VehicleCorners, self.cb_process_centers, queue_size=1)
-        self.sub_info = rospy.Subscriber(
-            "/{}/camera_node/camera_info".format(self.host), CameraInfo, self.cb_process_camera_info, queue_size=1
-        )
-
 
         # publishers
         self.pub_distance_to_robot_ahead = rospy.Publisher("/{}/duckiebot_distance_node/distance".format(self.host), Float32, queue_size=1)
+
+        # set up camera info
+        camera_info_msg = rospy.wait_for_message(f'/{self.veh}/camera_node/camera_info', CameraInfo)
         self.pcm = PinholeCameraModel()
+        self.pcm.fromCameraInfo(camera_info_msg)
         
         self.log("Initialization completed")
-
-
-    def cb_process_camera_info(self, msg):
-        """
-        Callback that stores the intrinsic calibration into a PinholeCameraModel object.
-
-        Args:
-
-            msg (:obj:`sensor_msgs.msg.CameraInfo`): Intrinsic properties of the camera.
-        """
-
-        self.pcm.fromCameraInfo(msg)
 
     def cb_process_centers(self, vehicle_centers_msg):
         """
@@ -73,10 +55,8 @@ class DuckiebotDistanceNode(DTROS):
 
         Args:
             vehicle_centers_msg (:obj:`duckietown_msgs.msg.VehicleCorners`): Detected pattern (if any)
-
         """
-
-        # check if there actually was a detection
+        # Check if there actually was a detection
         detection = vehicle_centers_msg.detection.data
         if detection:
             self.calc_circle_pattern(vehicle_centers_msg.H, vehicle_centers_msg.W)
@@ -112,15 +92,13 @@ class DuckiebotDistanceNode(DTROS):
                     
                     #####publish the distance information to a topic###
                     self.pub_distance_to_robot_ahead.publish(Float32(distance_to_vehicle))
-
-
                 else:
                     self.log(
                         "Pose estimation failed, too high reprojection error. "
                         "Reporting detection at 0cm for safety."
                     )
             else:
-                self.log("Pose estimation failed. " "Reporting detection at 0cm for safety.")
+                self.log("Pose estimation failed. Reporting detection at 0cm for safety.")
 
 
     def calc_circle_pattern(self, height, width):
@@ -132,8 +110,7 @@ class DuckiebotDistanceNode(DTROS):
             width (`int`): number of columns in the pattern
 
         """
-        # check if the version generated before is still valid, if not, or first time called, create
-
+        # Check if the version generated before is still valid, if not, or first time called, create
         if self.last_calc_circle_pattern is None or self.last_calc_circle_pattern != (height, width):
             self.circlepattern_dist = self.distance_between_centers
             self.circlepattern = np.zeros([height * width, 3])
