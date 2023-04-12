@@ -14,7 +14,7 @@ from dt_apriltags import Detector
 # Color masks
 YELLOW_MASK = [(20, 60, 0), (50, 255, 255)]  # for lane mask
 DUCK_MASK = [(7, 0, 0), (26, 255, 255)] # for duck mask
-BLUE_MASK = [(90, 100, 50), (140, 255, 255)]  # for blue mask
+BLUE_MASK = [(100, 130, 100), (120, 255, 175)]  # for blue mask
 ORANGE_MASK = [(0, 0, 0), (4, 255, 255)]  # for orange mask, lower range
 ORANGE_MASK2 = [(127, 60, 110), (179, 255, 255)] # upper range
 STOP_MASK1 = [(0, 75, 150), (5, 150, 255)] # for stop lines
