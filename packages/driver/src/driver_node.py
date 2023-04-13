@@ -203,7 +203,8 @@ class DriverNode(DTROS):
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
 
-        FORWARD_PARKING = self.constants['FORWARD_PARKING']
+        self.FORWARD_PARKING = self.constants['FORWARD_PARKING']
+        self.BOT_DEBUG = self.constants['BOT_DEBUG']
 
         # Apriltag detection timer
         if not AT_SYNCHRONOUS:
@@ -251,6 +252,7 @@ class DriverNode(DTROS):
 
     def stage2(self):
         rate = rospy.Rate(10) # increased from 8 to 10 to prevent jerky movements
+        self.velocity = self.constants['stage_2_velocity']
         while not rospy.is_shutdown() and self.closest_at != 38:
             if self.bot_detected:
                 self.switch_lanes()
@@ -264,6 +266,7 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
+        self.velocity = self.constants['stage_3_velocity']
         self.velocity = 0.25
         self.drive_to_intersection()
         self.intersection_sequence()
@@ -409,7 +412,6 @@ class DriverNode(DTROS):
     def switch_lanes(self):
         # increase velocity to avoid wheels getting stuck
         original_vel = self.velocity
-        self.velocity = 0.4
 
         if SWITCH_LANE_DEBUG:
             rospy.loginfo("Moving close to see if it needs help")
@@ -421,6 +423,8 @@ class DriverNode(DTROS):
         # stop to see if robot needs help
         self.stop()
         self.pass_time(5)
+
+        self.velocity = self.constants['switch_lane_velocity']
         if SWITCH_LANE_DEBUG:
             rospy.loginfo("Switching lanes")
         # Switch lanes
@@ -457,7 +461,7 @@ class DriverNode(DTROS):
 
         if detection > 0:
             self.bot_detected = True
-            if BOT_DEBUG:
+            if self.BOT_DEBUG:
                 rospy.loginfo("Bot detected")
 
     def detect_bot_contour(self):
@@ -586,7 +590,7 @@ class DriverNode(DTROS):
 
         self.face_apriltag(turn_direction, at)
 
-        if FORWARD_PARKING:
+        if self.FORWARD_PARKING:
             # advance forward to stall
             self.apriltag_follow(at, "FORWARD", self.constants['forward_distance_from_at'])
         else:
@@ -882,6 +886,8 @@ class DriverNode(DTROS):
                                 cv2.drawContours(crop, [yellow_contour], -1, (0, 255, 0), 3)
                                 cv2.drawContours(crop, [orange_contour], -1, (0, 255, 0), 3)
                                 cv2.circle(crop, (cx1, cy1), 7, (0, 0, 255), -1)
+                            
+                            break
                     except:
                         pass
 

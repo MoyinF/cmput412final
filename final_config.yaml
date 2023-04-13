@@ -1,5 +1,6 @@
-stall: 1
+stall: 3
 FORWARD_PARKING: True
+BOT_DEBUG: True
 
 # Apriltag detection variables
 decision_threshold: 10
@@ -7,11 +8,14 @@ z_threshold: 0.55
 
 # Lane-following variables
 velocity: 0.3
+stage_2_velocity: 0.27
+stage_3_velocity: 0.25
+switch_lane_velocity: 0.4
 P: 0.020
 D: -0.007
 offset: 190
-self.calibration: 0.25
-self.turn_speed: 0.35
+calibration: 0.26
+turn_speed: 0.35
 
 # Turning Variables
 left_turn_duration: 1.25
@@ -32,13 +36,13 @@ switch_duration: 3
 
 # Parking distances
 near_stall_distance: 0.55 # metres
-far_stall_distance: 0.2 # metres
+far_stall_distance: 0.25 # metres
 opposite_at_distance: 1.5 # metres
 forward_distance_from_at: 0.2 # metres
 backward_distance_from_at: 0.7 # metres
 
 # Parking constants
-parking_P: 2.5
+parking_P: 2.75
 parking_D: -0.5
 parking_forward_velocity: 0.20
 parking_backward_velocity: 0.3
