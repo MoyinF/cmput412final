@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import rospy, cv2, yaml
+import rospy, cv2, yaml, math
 import numpy as np
 
 from duckietown.dtros import DTROS, NodeType
@@ -33,6 +33,7 @@ SWITCH_LANE_DEBUG = False
 ENGLISH = False
 AT_SYNCHRONOUS = False
 CALLBACK_PROCESSING = True
+FORWARD_PARKING = True
 
 # Notes: 2023-04-09
 # Moves too slow? Check offset value
@@ -195,7 +196,7 @@ class DriverNode(DTROS):
         self.switch_duration = 3
 
         # Parking lot variables
-        self.near_stall_distance = 0.5 # metres
+        self.near_stall_distance = 0.55 # metres
         self.far_stall_distance = 0.2 # metres
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
@@ -206,7 +207,7 @@ class DriverNode(DTROS):
             self.apriltag_hz = 3
             self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.cb_detect_apriltag)
 
-        self.stage = 2
+        self.stage = 1
         self.loginfo("Initialized")
 
     def img_callback(self, msg):
@@ -491,15 +492,20 @@ class DriverNode(DTROS):
 
         return found_robot
 
-    def apriltag_follow(self, apriltag, direction, distance):
+    def apriltag_follow(self, apriltag, direction, distance, euc=False):
         rate = rospy.Rate(8)
         last_error = 0
         last_time = rospy.get_time()
 
-        parking_P = 2
-        parking_D = -0.7
-        parking_forward_velocity = 0.3
-        parking_backward_velocity = 0.4
+        parking_P = 2.5
+        parking_D = -0.5
+        parking_forward_velocity = 0.20
+
+        # file = open('/data/parking_forward_velocity', 'r')
+        # parking_forward_velocity = float(file.read().strip())
+        # file.close()
+
+        parking_backward_velocity = 0.3
 
         while not rospy.is_shutdown():
             x, y, z, theta = self.detect_apriltag_by_id(apriltag)
@@ -515,15 +521,17 @@ class DriverNode(DTROS):
 
             p_error = 0
 
+            distance_from_tag = z if not euc else math.sqrt(x**2 + z**2)
+
             if direction == "FORWARD":
-                if z <= distance:
+                if distance_from_tag <= distance:
                     break
                 else:
                     p_error = x
                     self.twist.v = parking_forward_velocity
 
             elif direction == "REVERSE":
-                if z >= distance:
+                if distance_from_tag >= distance:
                     break
                 else:
                     p_error = -x
@@ -581,14 +589,18 @@ class DriverNode(DTROS):
 
         self.face_apriltag(turn_direction, at)
 
-        # advance forward to stall
-        self.apriltag_follow(at, "FORWARD", 0.6)
+        if FORWARD_PARKING:
+            # advance forward to stall
+            self.apriltag_follow(at, "FORWARD", 0.2)
+        else:
+            # advance forward to stall
+            self.apriltag_follow(at, "FORWARD", 0.7)
 
-        # Turn backwards
-        self.face_apriltag(turn_direction, at_opposite)
+            # Turn backwards
+            self.face_apriltag(turn_direction, at_opposite)
 
-        # reverse into parking stall
-        self.apriltag_follow(at_opposite, "REVERSE", 1.5)
+            # reverse into parking stall
+            self.apriltag_follow(at_opposite, "REVERSE", 1.5, True)
 
     def reverse_to_stall(self, at_opposite):
         self.twist.v = -self.velocity
@@ -605,30 +617,24 @@ class DriverNode(DTROS):
         Turn until apriltag is in center of image
         """
         self.loginfo(f"Turning to face apriltag {apriltag}")
-
         rate = rospy.Rate(2)
 
+        # TODO: remove
+        # file = open('/data/angular_vel', 'r')
+        # angular_vel = int(file.read().strip())
+        # file.close()
+
+        angular_vel = 5
+
         self.twist.v = 0
-        if turn_direction == self.clockwise:
+        while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] <= 0:
+            self.twist.omega = angular_vel if turn_direction == self.counterclockwise else -angular_vel
+            self.vel_pub.publish(self.twist)
 
-            while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] >= 0:
-                self.twist.omega = -10
-                self.vel_pub.publish(self.twist)
+            rate.sleep()
 
-                rate.sleep()
-
-                self.twist.omega = 0
-                self.vel_pub.publish(self.twist)
-
-        else:
-            while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] <= 0:
-                self.twist.omega = 10
-                self.vel_pub.publish(self.twist)
-
-                rate.sleep()
-
-                self.twist.omega = 0
-                self.vel_pub.publish(self.twist)
+            self.twist.omega = 0
+            self.vel_pub.publish(self.twist)
 
     def detect_lane(self, img):
         """
