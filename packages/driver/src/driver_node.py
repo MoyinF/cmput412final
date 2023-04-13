@@ -53,10 +53,11 @@ class DriverNode(DTROS):
         self.node_name = node_name
         self.veh = rospy.get_param("~veh")
 
+        # Get constants
+        self.constants = self.readYamlFile(f'/data/final_config.yaml')
+
         # Get stall number from /data/stall file
-        stall_file = open('/data/stall', 'r')
-        self.stall = int(stall_file.read().strip())
-        stall_file.close()
+        self.stall = self.constants['stall']
 
         # Shutdown hook
         rospy.on_shutdown(self.hook)
@@ -133,15 +134,15 @@ class DriverNode(DTROS):
             self.set_LEDs(True)
 
         # apriltag detection filters
-        self.decision_threshold = 10
-        self.z_threshold = 0.55
+        self.decision_threshold = self.constants['decision_threshold']
+        self.z_threshold = self.constants['z_threshold']
 
         # PID Variables for driving
         self.proportional = None
         self.offset = 170
         if ENGLISH:
             self.offset = -170
-        self.velocity = 0.3
+        self.velocity = self.constants['velocity']
         self.twist = Twist2DStamped(v=self.velocity, omega=0)
         self.turn_speed = 0.15
 
@@ -155,30 +156,30 @@ class DriverNode(DTROS):
             self.calibration = 0.5
 
         if self.veh == "csc22907":
-            self.P = 0.020
-            self.D = -0.007
-            self.offset = 190
+            self.P = self.constants['P']
+            self.D = self.constants['D']
+            self.offset = self.constants['offset']
             if ENGLISH:
-                self.offset = -190
-            self.calibration = 0.25
-            self.turn_speed = 0.35
+                self.offset = -self.constants['offset']
+            self.calibration = self.constants['calibration']
+            self.turn_speed = self.constants['turn_speed']
 
         # Turning variables
-        self.left_turn_duration = 1.25
-        self.right_turn_duration = 1 # was 0.5 before, but changed because kept bumping into apriltag
-        self.turn_in_place_duration = 1
-        self.straight_duration = 2.5
+        self.left_turn_duration = self.constants['left_turn_duration']
+        self.right_turn_duration = self.constants['right_turn_duration'] # was 0.5 before, but changed because kept bumping into apriltag
+        self.turn_in_place_duration = self.constants['turn_in_place_duration']
+        self.straight_duration = self.constants['straight_duration']
         self.started_action = None
 
         # Crosswalk variables
         self.crosswalk_detected = False
-        self.crosswalk_threshold_area = 20000 # minimum area of blue to detect
+        self.crosswalk_threshold_area = self.constants['crosswalk_threshold_area'] # minimum area of blue to detect
 
         # Stop variables
         self.last_stop_time = None # last time we stopped
         self.stop_cooldown = 2 # how long should we wait after detecting a stop sign to detect another
         self.stop_duration = 3 # how long to stop for
-        self.stop_threshold_area = 10000 # minimum area of red to stop at
+        self.stop_threshold_area = self.constants['stop_threshold_area'] # minimum area of red to stop at
 
         # Bot detection
         self.bot_detected = False
@@ -191,16 +192,18 @@ class DriverNode(DTROS):
         params.minDistBetweenBlobs = 3 # changed from 2 to 3 so closer
         self.simple_blob_detector = cv2.SimpleBlobDetector_create(params)
 
-        self.bot_threshold_dist = 0.30
-        self.bot_threshold_area = 10000
-        self.switch_duration = 3
+        self.bot_threshold_dist = self.constants['bot_threshold_dist']
+        self.bot_threshold_area = self.constants['bot_threshold_area']
+        self.switch_duration = self.constants['switch_duration']
 
         # Parking lot variables
-        self.near_stall_distance = 0.55 # metres
-        self.far_stall_distance = 0.2 # metres
+        self.near_stall_distance = self.constants['near_stall_distance'] # metres
+        self.far_stall_distance = self.constants['far_stall_distance'] # metres
+        self.opposite_at_distance = self.constants['opposite_at_distance'] # metres
         self.clockwise = 'CLOCKWISE'
         self.counterclockwise = 'COUNTERCLOCKWISE'
-        self.opposite_at_distance = 1.5 # metres
+
+        FORWARD_PARKING = self.constants['FORWARD_PARKING']
 
         # Apriltag detection timer
         if not AT_SYNCHRONOUS:
@@ -247,7 +250,6 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 1 :)")
 
     def stage2(self):
-
         rate = rospy.Rate(10) # increased from 8 to 10 to prevent jerky movements
         while not rospy.is_shutdown() and self.closest_at != 38:
             if self.bot_detected:
@@ -497,15 +499,10 @@ class DriverNode(DTROS):
         last_error = 0
         last_time = rospy.get_time()
 
-        parking_P = 2.5
-        parking_D = -0.5
-        parking_forward_velocity = 0.20
-
-        # file = open('/data/parking_forward_velocity', 'r')
-        # parking_forward_velocity = float(file.read().strip())
-        # file.close()
-
-        parking_backward_velocity = 0.3
+        parking_P = self.constants['parking_P']
+        parking_D = self.constants['parking_D']
+        parking_forward_velocity = self.constants['parking_forward_velocity']
+        parking_backward_velocity = self.constants['parking_backward_velocity']
 
         while not rospy.is_shutdown():
             x, y, z, theta = self.detect_apriltag_by_id(apriltag)
@@ -591,16 +588,16 @@ class DriverNode(DTROS):
 
         if FORWARD_PARKING:
             # advance forward to stall
-            self.apriltag_follow(at, "FORWARD", 0.2)
+            self.apriltag_follow(at, "FORWARD", self.constants['forward_distance_from_at'])
         else:
             # advance forward to stall
-            self.apriltag_follow(at, "FORWARD", 0.7)
+            self.apriltag_follow(at, "FORWARD", self.constants['backward_distance_from_at'])
 
             # Turn backwards
             self.face_apriltag(turn_direction, at_opposite)
 
             # reverse into parking stall
-            self.apriltag_follow(at_opposite, "REVERSE", 1.5, True)
+            self.apriltag_follow(at_opposite, "REVERSE", self.constants['opposite_at_distance'], True)
 
     def reverse_to_stall(self, at_opposite):
         self.twist.v = -self.velocity
@@ -619,12 +616,7 @@ class DriverNode(DTROS):
         self.loginfo(f"Turning to face apriltag {apriltag}")
         rate = rospy.Rate(2)
 
-        # TODO: remove
-        # file = open('/data/angular_vel', 'r')
-        # angular_vel = int(file.read().strip())
-        # file.close()
-
-        angular_vel = 5
+        angular_vel = self.constants['angular_vel']
 
         self.twist.v = 0
         while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] <= 0:
@@ -903,7 +895,6 @@ class DriverNode(DTROS):
                 rospy.loginfo("Ducks not detected.")
 
         return found_ducks
-
 
     def set_LEDs(self, on = True):
         '''
