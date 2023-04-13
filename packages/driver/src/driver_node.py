@@ -206,7 +206,7 @@ class DriverNode(DTROS):
             self.apriltag_hz = 3
             self.timer = rospy.Timer(rospy.Duration(1 / self.apriltag_hz), self.cb_detect_apriltag)
 
-        self.stage = 1
+        self.stage = 2
         self.loginfo("Initialized")
 
     def img_callback(self, msg):
@@ -261,6 +261,7 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
+        self.velocity = 0.25
         self.drive_to_intersection()
         self.intersection_sequence()
         rospy.loginfo("Parking in stall no. {}".format(str(self.stall)))
@@ -308,15 +309,15 @@ class DriverNode(DTROS):
         self.pass_time(self.stop_duration)
 
         # Determine which direction to go, based on apriltag
-        if self.closest_at == 48:
+        if self.closest_at in [94, 48]:
             self.right_turn()
-        elif self.closest_at == 50:
+        elif self.closest_at in [50, 169]:
             self.left_turn()
-        elif self.closest_at == 56:
+        elif self.closest_at in [56, 200]:
             self.straight()
         elif self.closest_at == 38:
             pass
-        elif self.closest_at == 163:
+        elif self.closest_at in [163, 21]:
             self.avoid_ducks()
         else:
             self.stop()
@@ -480,10 +481,10 @@ class DriverNode(DTROS):
         for i in range(len(contours)):
             area = cv2.contourArea(contours[i])
             if area > max_area:
-                # if not DEBUG:
-                #     break
                 max_idx = i
                 max_area = area
+                if not DEBUG:
+                    break
 
         if max_idx != -1:
             found_robot = True
@@ -495,11 +496,17 @@ class DriverNode(DTROS):
         last_error = 0
         last_time = rospy.get_time()
 
+        parking_P = 2
+        parking_D = -0.7
+        parking_forward_velocity = 0.3
+        parking_backward_velocity = 0.4
+
         while not rospy.is_shutdown():
             x, y, z, theta = self.detect_apriltag_by_id(apriltag)
 
             if x == 0:
                 self.twist.omega = 0
+                self.twist.v = 0
                 self.vel_pub.publish(self.twist)
 
                 rate.sleep()
@@ -512,25 +519,24 @@ class DriverNode(DTROS):
                 if z <= distance:
                     break
                 else:
-                    p_error = x * 1000
-                    self.twist.v = self.velocity
+                    p_error = x
+                    self.twist.v = parking_forward_velocity
 
             elif direction == "REVERSE":
                 if z >= distance:
                     break
                 else:
-                    x = np.sin(theta) * distance - x
-                    p_error = x * 200
-                    self.twist.v = -self.velocity
+                    p_error = -x
+                    self.twist.v = -parking_backward_velocity
 
             # P Term
-            P = -p_error * self.P
+            P = -p_error * parking_P
 
             # D Term
             d_error = (p_error - last_error) / (rospy.get_time() - last_time)
             last_error = p_error
             last_time = rospy.get_time()
-            D = d_error * self.D
+            D = d_error * parking_D
 
             self.twist.omega = P + D
             self.vel_pub.publish(self.twist)
@@ -552,26 +558,34 @@ class DriverNode(DTROS):
         # turn the vehicle such that it faces away from the target stall
         at_opposite = None
         turn_direction = None
+        at = None
         if stall == 1:
+            at = 207
             at_opposite = 228 # stall 3
-            turn_direction = self.clockwise
+            turn_direction = self.counterclockwise
 
         elif stall == 2:
+            at = 226
             at_opposite = 75 # stall 4
-            turn_direction = self.clockwise
+            turn_direction = self.counterclockwise
 
         elif stall == 3:
+            at = 228
             at_opposite = 207 # stall 1
-            turn_direction = self.counterclockwise
+            turn_direction = self.clockwise
 
         elif stall == 4:
+            at = 75
             at_opposite = 226 # stall 2
-            turn_direction = self.counterclockwise
+            turn_direction = self.clockwise
 
+        self.face_apriltag(turn_direction, at)
+
+        # advance forward to stall
+        self.apriltag_follow(at, "FORWARD", 0.6)
+
+        # Turn backwards
         self.face_apriltag(turn_direction, at_opposite)
-
-        # advance forward to opposite stall
-        self.apriltag_follow(at_opposite, "FORWARD", 0.5)
 
         # reverse into parking stall
         self.apriltag_follow(at_opposite, "REVERSE", 1.5)
@@ -598,7 +612,7 @@ class DriverNode(DTROS):
         if turn_direction == self.clockwise:
 
             while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] >= 0:
-                self.twist.omega = -5
+                self.twist.omega = -10
                 self.vel_pub.publish(self.twist)
 
                 rate.sleep()
@@ -608,7 +622,7 @@ class DriverNode(DTROS):
 
         else:
             while not rospy.is_shutdown() and self.detect_apriltag_by_id(apriltag)[0] <= 0:
-                self.twist.omega = 5
+                self.twist.omega = 10
                 self.vel_pub.publish(self.twist)
 
                 rate.sleep()
