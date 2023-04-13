@@ -336,7 +336,7 @@ class DriverNode(DTROS):
         self.loginfo("Turning right")
         twist = Twist2DStamped()
         twist.v = self.turn_speed
-        twist.omega = -3 # was -2.25 before, but changed because it kept bumping into apriltag
+        twist.omega = self.constants['right_turn_omega']
         start_time = rospy.get_time()
         rate = rospy.Rate(4)
         while not rospy.is_shutdown() and rospy.get_time() - start_time < self.right_turn_duration:
@@ -350,7 +350,7 @@ class DriverNode(DTROS):
         self.loginfo("Turning left")
         twist = Twist2DStamped()
         twist.v = self.turn_speed
-        twist.omega = 1.75
+        twist.omega = self.constants['left_turn_omega']
         start_time = rospy.get_time()
         rate = rospy.Rate(4)
         while not rospy.is_shutdown() and rospy.get_time() - start_time < self.left_turn_duration:

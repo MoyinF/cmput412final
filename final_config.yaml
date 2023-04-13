@@ -15,7 +15,9 @@ self.turn_speed: 0.35
 
 # Turning Variables
 left_turn_duration: 1.25
+left_turn_omega: 1.75
 right_turn_duration: 1
+right_turn_omega: -2.25
 turn_in_place_duration: 1
 straight_duration: 2.5
 
