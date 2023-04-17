@@ -35,16 +35,6 @@ AT_SYNCHRONOUS = False
 CALLBACK_PROCESSING = True
 FORWARD_PARKING = True
 
-# Notes: 2023-04-09
-# Moves too slow? Check offset value
-# Turns when meant to move straight? Check straight_duration
-
-# TODO:
-# get stall num from command line
-# change so it stops a bit closer to the blue line
-# or increase the size of the crop, problem is it might see far ducks and stop.
-# Maybe: implement correct
-
 class DriverNode(DTROS):
 
     def __init__(self, node_name):
@@ -232,6 +222,9 @@ class DriverNode(DTROS):
             self.detect_bot() # detect robot
 
     def run(self):
+        """
+        Runs all three stages
+        """
         self.stage1()
         self.stage2()
         self.stage3()
@@ -239,6 +232,9 @@ class DriverNode(DTROS):
         rospy.signal_shutdown("Program terminating.")
 
     def stage1(self):
+        """
+        Implements stage 1: Lane follow according to april tag directions
+        """
         rate = rospy.Rate(8)  # 8hz
         while not rospy.is_shutdown() and self.closest_at not in [163, 38]:
             if self.intersection_detected:
@@ -251,6 +247,10 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 1 :)")
 
     def stage2(self):
+        """
+        Implements stage 2: avoid crashing into ducks and switch lanes
+        when detecting a broken-down duckiebot
+        """
         rate = rospy.Rate(10) # increased from 8 to 10 to prevent jerky movements
         self.velocity = self.constants['stage_2_velocity']
         while not rospy.is_shutdown() and self.closest_at != 38:
@@ -266,6 +266,9 @@ class DriverNode(DTROS):
         self.loginfo("Finished stage 2!")
 
     def stage3(self):
+        """
+        Implements stage 3: park in the specified stall
+        """
         self.velocity = self.constants['stage_3_velocity']
         self.velocity = 0.25
         self.drive_to_intersection()
@@ -274,22 +277,19 @@ class DriverNode(DTROS):
         self.park(self.stall)
 
     def drive_to_intersection(self):
-        # and stop
+        """
+        Lane follows until it detects an intersection
+        """
         rate = rospy.Rate(8)
         while not rospy.is_shutdown() and not self.intersection_detected:
             self.lane_follow()
             rate.sleep()
         self.stop()
 
-    def correct(self):
-        # TODO: will be used when the duckiebot stops, before continuing
-        # check if yellow contours in frame (or in crop of frame)
-        # if not, turn left (for right lane following) and then continue lane following
-
-        # useful after self.straight in check_for_ducks, but not always needed
-        return
-
     def lane_follow(self):
+        """
+        Implements lane following
+        """
         if self.proportional is None:
             self.twist.omega = 0
             self.twist.v = 0.1 # drive slowly until we see the yellow lines again
@@ -397,6 +397,9 @@ class DriverNode(DTROS):
             continue
 
     def avoid_ducks(self):
+        """
+        Stop until detect ducks are not there
+        """
         self.stop() # just to make sure
         rate = rospy.Rate(2)
         self.check_for_ducks()
@@ -410,13 +413,16 @@ class DriverNode(DTROS):
         self.crosswalk_detected = False
 
     def switch_lanes(self):
+        """
+        Switch lanes when it detects the duckiebot is close enough, then switch back
+        """
         # increase velocity to avoid wheels getting stuck
         original_vel = self.velocity
 
         if SWITCH_LANE_DEBUG:
             rospy.loginfo("Moving close to see if it needs help")
         # keep moving till we're close to the bot
-        rate = rospy.Rate(14) # TODO: test with 8
+        rate = rospy.Rate(14)
         while not rospy.is_shutdown() and not self.detect_bot_contour() and self.bot_detected:
             self.lane_follow()
             rate.sleep()
@@ -450,6 +456,9 @@ class DriverNode(DTROS):
         self.velocity = original_vel
 
     def detect_bot(self):
+        """
+        Detect a duckiebot using circle grid
+        """
         self.bot_detected = False
         image_cv = self.bridge.compressed_imgmsg_to_cv2(self.image_msg, "bgr8")
         (detection, centers) = cv2.findCirclesGrid(
@@ -465,6 +474,9 @@ class DriverNode(DTROS):
                 rospy.loginfo("Bot detected")
 
     def detect_bot_contour(self):
+        """
+        Detect a duckiebot using the blue contour area
+        """
         msg = self.image_msg
         if not msg:
             return
@@ -499,6 +511,9 @@ class DriverNode(DTROS):
         return found_robot
 
     def apriltag_follow(self, apriltag, direction, distance, euc=False):
+        """
+        Drive to be a certain distance from an april tag
+        """
         rate = rospy.Rate(8)
         last_error = 0
         last_time = rospy.get_time()
@@ -555,7 +570,9 @@ class DriverNode(DTROS):
         self.stop()
 
     def park(self, stall):
-        # advance into parking lot until perpendicular to desired stall
+        """
+        Advance into parking lot until perpendicular to desired stall
+        """
         target_distance = 0
         if stall == 1 or stall == 3:
             target_distance = self.far_stall_distance
@@ -602,16 +619,6 @@ class DriverNode(DTROS):
 
             # reverse into parking stall
             self.apriltag_follow(at_opposite, "REVERSE", self.constants['opposite_at_distance'], True)
-
-    def reverse_to_stall(self, at_opposite):
-        self.twist.v = -self.velocity
-        self.twist.omega = -self.calibration
-        rate = rospy.Rate(8)
-        while not rospy.is_shutdown() and self.detect_apriltag_by_id(at_opposite)[3] < self.opposite_at_distance:
-            self.vel_pub.publish(self.twist)
-            rate.sleep()
-
-        self.stop()
 
     def face_apriltag(self, turn_direction, apriltag):
         """
@@ -672,6 +679,9 @@ class DriverNode(DTROS):
             self.pub_mask.publish(rect_img_msg)
 
     def detect_intersection(self, img):
+        """
+        Detect an intersection using red contours
+        """
         # Don't detect if we recently detected an intersection
         if self.last_stop_time and rospy.get_time() - self.last_stop_time < self.stop_cooldown:
             return
@@ -714,6 +724,9 @@ class DriverNode(DTROS):
             self.pub_mask.publish(rect_img_msg)
 
     def detect_crosswalk(self, img):
+        """
+        Detect an intersection using blue contours
+        """
         # Mask for blue lines
         crop = img[400:-1, :, :]
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
@@ -751,6 +764,9 @@ class DriverNode(DTROS):
             self.pub_mask.publish(rect_img_msg)
 
     def detect_apriltag_by_id(self, apriltag):
+        """
+        Detects if an april tag with a specific ID is there, and if it is, returns its position
+        """
         # Returns the x, y, z coordinate of a specific apriltag in metres, and its pitch in radians
         img_msg = self.image_msg
         if not img_msg:
@@ -793,6 +809,9 @@ class DriverNode(DTROS):
         return (0, 0, 0, 0)
 
     def cb_detect_apriltag(self, _):
+        """
+        Detects closest april tag in view, if there is one
+        """
         if self.image_msg is None:
             return False
         img_msg = self.image_msg
@@ -838,6 +857,9 @@ class DriverNode(DTROS):
             self.at_detected = False
 
     def check_for_ducks(self):
+        """
+        Detect ducks using orange and yellow contours
+        """
         msg = self.image_msg
         if not msg:
             return

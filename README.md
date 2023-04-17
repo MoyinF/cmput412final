@@ -1,47 +1,42 @@
-# Template: template-ros
+# Final Project: Autonomous Driving with Duckietown
 
-This template provides a boilerplate repository
-for developing ROS-based software in Duckietown.
+This repository contains implementation solutions for the final project. For information about the project, please read the report.
 
-**NOTE:** If you want to develop software that does not use
-ROS, check out [this template](https://github.com/duckietown/template-basic).
+Individual reports are hosted at:
 
+- [Nadeen Mohamed's site](https://sites.google.com/ualberta.ca/nadeen-cmput-412/written-reports/final-project)
+- [Moyinoluwa Famobiwo's site](https://sites.google.com/ualberta.ca/famobiwo-cmput-412/labs/final-project)
+- [Austin Tralnberg's Site]()
 
-## How to use it
+## Structure
 
-### 1. Fork this repository
+The package for autonomous driving is: driver. We will discuss the execution of the python source files for each package (which are located inside the package's `src` folder).
 
-Use the fork button in the top-right corner of the github page to fork this template repository.
+- `driver/driver_node.py`: Code for the node that implements all three stages of the final project. The node implements all three stages in different methods.
 
+## Execution:
 
-### 2. Create a new repository
+To set the stall parameter, as well as other parameters such as wheel velocities, omega values, stopping distances, etc., ssh into the duckiebot and create a file in the `/data/` folder titled `final_config.yaml`. The exact file we used is in this repository. You can change the numbers in `/data/final_config.yaml`, for example with the following steps:
 
-Create a new repository on github.com while
-specifying the newly forked template repository as
-a template for your new repository.
+```
+ssh duckie@csc229xx.local # where csc229xx is the duckiebot's hostname
+vim /data/final_config.yaml # creates or opens the config file, where you edit the configurations (an example is given in final_config.yaml)
+```
 
+To run the program, ensure that the variable `$BOT` stores your robot's host name (ie. `csc229xx`), and run the following commands:
 
-### 3. Define dependencies
+```
+dts devel build -f -H $BOT.local
+dts devel run -H $BOT.local
+```
 
-List the dependencies in the files `dependencies-apt.txt` and
-`dependencies-py3.txt` (apt packages and pip packages respectively).
+The program shuts down automatically after completing stage 3.
+To shutdown the program before that, enter `CTRL + C` in your terminal.
 
+## Credit:
 
-### 4. Place your code
+This code is built from the Duckiebot detections starter code by Zepeng Xiao (https://github.com/XZPshaw/CMPUT412503_exercise4).
 
-Place your code in the directory `/packages/` of
-your new repository.
+Build on top of by Nadeen Mohamed, Moyinoluwa Famobiwo, and Austin Tralnberg.
 
-
-### 5. Setup launchers
-
-The directory `/launchers` can contain as many launchers (launching scripts)
-as you want. A default launcher called `default.sh` must always be present.
-
-If you create an executable script (i.e., a file with a valid shebang statement)
-a launcher will be created for it. For example, the script file 
-`/launchers/my-launcher.sh` will be available inside the Docker image as the binary
-`dt-launcher-my-launcher`.
-
-When launching a new container, you can simply provide `dt-launcher-my-launcher` as
-command.
+Autonomous lane following code was also borrowed from Justin Francis.
